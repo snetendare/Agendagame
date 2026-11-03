@@ -3,15 +3,20 @@
 //   moveTo(id, col, row)  walk figure id to that tile, round anyone standing in the way (8 directions, no cutting past
 //                         a corner that a figure fills); a tile someone stands on gives the nearest free tile instead.
 //                         Returns false when there's no way there.
+//   sit(id, seat)        walk to a seat (src/furniture.js) and sit down at it (or stand at it, at a standing table),
+//                         facing the table; the seat is held for id from now. Walking anywhere else gets up first.
+//   leave(id)            get up and step to the nearest free tile
 //   setMe(player)         whose view this is (0 or 1): only that player's figure gets the circle under it, and only that
 //                         player's planned path is drawn. The other player's figure looks like any NPC.
 //   update(dt), busy()    once per drawn frame; busy while anyone walks
 // Everyone walks at SPEED: NML's move speed 2 (metres a second; the Flame Wizard's), so a tile takes 3 s.
 // The path is a smooth curve through the tiles' middles; the arrow on the ground is that same curve, from the figure to
 // the end, shrinking as it walks.
-const Movement = (THREE, scene, board, people, opts = {}) => {
+const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   const SPEED = 2;          // m/s, NML's move speed 2
   const TURN = 9;           // how fast a figure turns to face where it walks (per second)
+  const POSE_S = 0.32;      // seconds to sit down or get up
+  const SIT_SQUASH = 0.3;   // a sitting figure is this much shorter (the robe folds over the seat)
   const ARROW_W = 0.9;      // the path arrow's width (m)
   const HEAD_L = 1.9, HEAD_W = 2.4; // its head
   const MINE = '#F2D16B';   // your marks: the circle, the arrow, the destination
@@ -36,9 +41,11 @@ const Movement = (THREE, scene, board, people, opts = {}) => {
   const key = (c, r) => c + ',' + r;
   const inside = (c, r) => c >= 0 && c < board.cols && r >= 0 && r < board.rows;
   const walks = new Map(); // id -> { curve, len, s }
-  // tiles taken by everyone but id: where they stand, and where they're walking to
-  function taken(id) {
-    const out = new Set();
+  // tiles taken for id: furniture, every seat but the one it's going to, and everyone else (where they stand and
+  // where they're walking to)
+  function taken(id, seat) {
+    const out = new Set([...furniture.blocked, ...furniture.seatTiles]);
+    if (seat) out.delete(key(seat.col, seat.row));
     for (const p of people.list) {
       if (p.id === id) continue;
       out.add(key(p.col, p.row));
@@ -86,15 +93,20 @@ const Movement = (THREE, scene, board, people, opts = {}) => {
     }
     return best;
   }
-  function moveTo(id, col, row) {
+  // give up a seat (and get up, if sitting)
+  function release(who) { if (who.seat && who.seat.by === who.id) who.seat.by = null; who.seat = null; who.seated = false; }
+  function moveTo(id, col, row, seat = null) {
     const who = people.list[id]; if (!who || !inside(col, row)) return false;
-    const pos = who.group.position, blocked = taken(id), from = people.tileOf(pos.x, pos.z);
+    if (seat && seat.by != null && seat.by !== id) return false;
+    const pos = who.group.position, blocked = taken(id, seat), from = people.tileOf(pos.x, pos.z);
     let to = { col, row };
-    if (blocked.has(key(col, row))) to = nearestFree(col, row, blocked, from);
+    if (!seat && blocked.has(key(col, row))) to = nearestFree(col, row, blocked, from);
     if (!to) return false;
     blocked.delete(key(from.col, from.row));
     const tiles = path(from, to, blocked);
     if (!tiles) return false;
+    release(who);
+    if (seat) { seat.by = id; who.seat = seat; }
     // from where the figure is now, through the middles of the tiles after the one it's on, pulled straight: a corner
     // is kept only where a straight line to a later tile would brush someone (A* zigzags between equally short routes)
     const mids = (tiles.length > 1 ? tiles.slice(1) : tiles).map(([c, r]) => people.centre(c, r));
@@ -105,12 +117,19 @@ const Movement = (THREE, scene, board, people, opts = {}) => {
       while (j > i && !clear(at, mids[j], blocked)) j--;
       at = mids[j]; pts.push(new THREE.Vector3(at[0], 0, at[1])); i = j + 1;
     }
-    if (pts[0].distanceTo(pts[pts.length - 1]) < 0.01 && pts.length === 2) { who.col = to.col; who.row = to.row; return true; }
+    if (seat) pts[pts.length - 1].set(seat.x, 0, seat.z); // a seat's place isn't the tile's middle: it's pulled to its table
+    if (pts[0].distanceTo(pts[pts.length - 1]) < 0.05) { walks.delete(id); who.col = to.col; who.row = to.row; if (seat) who.seated = true; return true; }
     const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
     walks.set(id, { curve, len: curve.getLength(), s: 0 });
     who.col = to.col; who.row = to.row;
     if (who.player === me) markDest(to);
     return true;
+  }
+  function sit(id, s) { return !!s && moveTo(id, s.col, s.row, s); }
+  function leave(id) {
+    const who = people.list[id], blocked = taken(id), t = people.tileOf(who.group.position.x, who.group.position.z);
+    const to = nearestFree(t.col, t.row, blocked, t);
+    return to ? moveTo(id, to.col, to.row) : false;
   }
   function markDest(to) { const [x, z] = people.centre(to.col, to.row); dest.position.x = x; dest.position.z = z; dest.visible = true; }
 
@@ -147,7 +166,17 @@ const Movement = (THREE, scene, board, people, opts = {}) => {
       w.curve.getPointAt(u, tmp); w.curve.getTangentAt(u, tan);
       g.position.x = tmp.x; g.position.z = tmp.z;
       turnTo(g, Math.atan2(-tan.x, -tan.z), dt); // the body faces -z
-      if (w.s >= w.len) walks.delete(id);
+      if (w.s >= w.len) { walks.delete(id); const who = people.list[id]; if (who.seat) who.seated = true; }
+    }
+    // sitting down and getting up, and turning to face the table once there
+    for (const who of people.list) {
+      const g = who.group, want = who.seated && who.seat.pose === 'sit' ? 1 : 0;
+      if (who.seated && !walks.has(who.id)) turnTo(g, who.seat.yaw, dt);
+      if (who.pose !== want) who.pose = want > who.pose ? Math.min(1, who.pose + dt / POSE_S) : Math.max(0, who.pose - dt / POSE_S);
+      if (who.seated) who.sitY = who.seat.y; // kept while getting up, so it sinks back down from the same height
+      const k = who.pose * who.pose * (3 - 2 * who.pose), y = who.sitY || 0;
+      g.position.y = y * k;
+      g.scale.y = who.base * (1 - SIT_SQUASH * k);
     }
     const mine = people.list.find((p) => p.player === me);
     ring.position.x = mine.group.position.x; ring.position.z = mine.group.position.z;
@@ -155,5 +184,7 @@ const Movement = (THREE, scene, board, people, opts = {}) => {
     if (w) drawArrow(w); else { arrow.visible = false; dest.visible = false; }
   }
   function setMe(p) { me = p; const w = walks.get(people.list.find((q) => q.player === me).id); dest.visible = false; if (w) { const who = people.list.find((q) => q.player === me); markDest(who); } }
-  return { moveTo, setMe, update, busy: () => walks.size > 0, me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
+  const settling = () => people.list.some((w) => (w.seated && !walks.has(w.id) && Math.abs(Math.atan2(Math.sin(w.seat.yaw - w.group.rotation.y), Math.cos(w.seat.yaw - w.group.rotation.y))) > 0.01)
+    || w.pose !== (w.seated && w.seat.pose === 'sit' ? 1 : 0));
+  return { moveTo, sit, leave, setMe, update, busy: () => walks.size > 0 || settling(), walking: (id) => walks.has(id), me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
 };

@@ -13,6 +13,15 @@ html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; o
 #world canvas { display: block; }
 .seat { position: fixed; top: calc(10px + env(safe-area-inset-top, 0px)); right: max(10px, env(safe-area-inset-right, 0px)); padding: 6px 10px; border: 0; border-radius: 6px;
   background: rgba(52, 40, 32, 0.78); color: #EFE6DA; font: 12px/1.3 system-ui, sans-serif; cursor: pointer; }
+/* the popup over furniture: a small card, the action as one clear button */
+.pop { position: fixed; left: 0; top: 0; display: grid; gap: 2px 12px; grid-template-columns: auto auto; align-items: center; padding: 8px 8px 8px 12px; border-radius: 8px;
+  background: rgba(36, 27, 21, 0.92); color: #EFE6DA; font: 13px/1.3 system-ui, sans-serif; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
+.pop[hidden] { display: none; }
+.pop-name { font-weight: 600; grid-column: 1; }
+.pop-info { grid-column: 1; color: #BFAF9C; font-size: 12px; font-variant-numeric: tabular-nums; }
+.pop-go { grid-column: 2; grid-row: 1 / span 2; padding: 8px 14px; border: 0; border-radius: 6px; background: #F2D16B; color: #2A1D12; font: 600 13px system-ui, sans-serif; cursor: pointer; }
+.pop-go:disabled { background: #6B5D50; color: #BFAF9C; cursor: default; }
+.pop-go:focus-visible { outline: 2px solid #FFF; outline-offset: 2px; }
 .seat:focus-visible { outline: 2px solid #F2D16B; outline-offset: 2px; }
 .hint { position: fixed; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); max-width: calc(100% - 32px);
   padding: 7px 12px; border-radius: 6px; background: rgba(52, 40, 32, 0.78); color: #EFE6DA; font: 13px/1.35 system-ui, sans-serif; text-align: center; pointer-events: none; }
@@ -20,14 +29,16 @@ html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; o
 </head>
 <body>
 <div id="world"></div>
-<div class="hint">Tap a tile to walk there. Tap a person to show their pie, tap again to add a piece.</div>
+<div class="pop" id="pop" hidden><div class="pop-name" id="pop-name"></div><div class="pop-info" id="pop-info"></div><button class="pop-go" id="pop-go" type="button">Sit down</button></div>
+<div class="hint">Tap a tile to walk there. Tap a table or chair to sit. Tap a person to show their pie, tap again to add a piece.</div>
 <button class="seat" id="seat" type="button">You are player 1 · switch</button>
 <script type="module">
 import * as THREE from '/*THREE_URL*/';
 /*CODE*/
-window.agenda = World(THREE, document.getElementById('world'));
+const $ = (id) => document.getElementById(id);
+window.agenda = World(THREE, $('world'), { popup: { el: $('pop'), name: $('pop-name'), info: $('pop-info'), go: $('pop-go') } });
 // testing hidden identity on one screen: see the match as either player (each sees only their own circle and path)
-const seat = document.getElementById('seat');
+const seat = $('seat');
 seat.addEventListener('click', () => { const p = 1 - agenda.moves.me(); agenda.setMe(p); seat.textContent = `You are player ${p + 1} · switch`; });
 </script>
 </body>

@@ -13,6 +13,15 @@ html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; o
 #world canvas { display: block; }
 .seat { position: fixed; top: calc(10px + env(safe-area-inset-top, 0px)); right: max(10px, env(safe-area-inset-right, 0px)); padding: 6px 10px; border: 0; border-radius: 6px;
   background: rgba(52, 40, 32, 0.78); color: #EFE6DA; font: 12px/1.3 system-ui, sans-serif; cursor: pointer; }
+/* the popup over furniture: a small card, the action as one clear button */
+.pop { position: fixed; left: 0; top: 0; display: grid; gap: 2px 12px; grid-template-columns: auto auto; align-items: center; padding: 8px 8px 8px 12px; border-radius: 8px;
+  background: rgba(36, 27, 21, 0.92); color: #EFE6DA; font: 13px/1.3 system-ui, sans-serif; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
+.pop[hidden] { display: none; }
+.pop-name { font-weight: 600; grid-column: 1; }
+.pop-info { grid-column: 1; color: #BFAF9C; font-size: 12px; font-variant-numeric: tabular-nums; }
+.pop-go { grid-column: 2; grid-row: 1 / span 2; padding: 8px 14px; border: 0; border-radius: 6px; background: #F2D16B; color: #2A1D12; font: 600 13px system-ui, sans-serif; cursor: pointer; }
+.pop-go:disabled { background: #6B5D50; color: #BFAF9C; cursor: default; }
+.pop-go:focus-visible { outline: 2px solid #FFF; outline-offset: 2px; }
 .seat:focus-visible { outline: 2px solid #F2D16B; outline-offset: 2px; }
 .hint { position: fixed; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); max-width: calc(100% - 32px);
   padding: 7px 12px; border-radius: 6px; background: rgba(52, 40, 32, 0.78); color: #EFE6DA; font: 13px/1.35 system-ui, sans-serif; text-align: center; pointer-events: none; }
@@ -20,7 +29,8 @@ html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; o
 </head>
 <body>
 <div id="world"></div>
-<div class="hint">Tap a tile to walk there. Tap a person to show their pie, tap again to add a piece.</div>
+<div class="pop" id="pop" hidden><div class="pop-name" id="pop-name"></div><div class="pop-info" id="pop-info"></div><button class="pop-go" id="pop-go" type="button">Sit down</button></div>
+<div class="hint">Tap a tile to walk there. Tap a table or chair to sit. Tap a person to show their pie, tap again to add a piece.</div>
 <button class="seat" id="seat" type="button">You are player 1 · switch</button>
 <script type="module">
 import * as THREE from './vendor/three.module.min.js';
@@ -456,17 +466,160 @@ const Match = (seed = Math.floor(Math.random() * 2147483646) + 1) => {
   return { seed, rng };
 };
 
+// ===== Furniture: the things people use (the dining table, standing tables, the bar, chairs by the walls) =====
+// Furniture(THREE, scene, board) places the pieces on the tiles of the board and gives each its places to be:
+//   the dining table, 3 x 1 tiles, 8 seats round it (3 on each long side, one at each end)
+//   2 standing (mingle) tables, 1 tile each, 3 places to stand at each
+//   the bar against the far wall, 2 tiles, 2 stools
+//   4 single chairs against the walls
+// Each piece: { id, kind, name, verb, tiles: [[col, row]], seats, group, top (height of its top, m) }.
+// Each seat: { id, furniture, col, row, pose ('sit' or 'stand'), x, z (where the body goes), y (how high it sits),
+// yaw (which way it faces), by (the character using it or walking to it, else null) }.
+// The furniture's tiles can't be walked on, and neither can a seat's tile except by the one going to that seat
+// (src/movement.js). Sized for the people: a figure is about 4 m tall (2.2 times a person), so is the furniture.
+const Furniture = (THREE, scene, board) => {
+  const T = board.tile, BW = board.cols * T, BD = board.rows * T;
+  const K = 2.2; // people are drawn 2.2 times life size: so is everything they use
+  const centre = (c, r) => [(c + 0.5) * T - BW / 2, (r + 0.5) * T - BD / 2];
+  const std = (color, rough = 0.7, metal = 0) => new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: metal });
+  const M = { wood: std('#3B2416', 0.55), cloth: std('#F2EEE6', 0.9), brass: std('#C9A24A', 0.35, 0.6), marble: std('#E6E1D8', 0.3),
+    velvet: std('#7A1F2B', 0.95), china: std('#FBFAF6', 0.35), candle: std('#FFF4DC', 0.6), glass: [std('#2F5A3A', 0.25), std('#6B1E24', 0.25), std('#C79A3B', 0.25), std('#3A3F6B', 0.25)] };
+  const add = (g, geo, mat, x, y, z, ry = 0) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.rotation.y = ry; m.castShadow = true; m.receiveShadow = true; g.add(m); return m; };
+  const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+  const cyl = (rt, rb, h, n = 20) => new THREE.CylinderGeometry(rt, rb, h, n);
+
+  // ---------- the models (each built at the origin, its front toward -z) ----------
+  // a dining chair: velvet seat and back, dark wood legs. The sitter sits over its middle, facing -z.
+  const SEAT_Y = 0.46 * K;
+  function chair() {
+    const g = new THREE.Group(), s = 0.48 * K, legH = SEAT_Y - 0.08;
+    for (const [x, z] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) add(g, box(0.1, legH, 0.1), M.wood, x * (s / 2 - 0.08), legH / 2, z * (s / 2 - 0.08));
+    add(g, box(s, 0.12, s), M.wood, 0, legH + 0.06, 0);
+    add(g, box(s - 0.12, 0.12, s - 0.12), M.velvet, 0, legH + 0.18, 0);
+    add(g, box(s, 0.5 * K, 0.12), M.wood, 0, SEAT_Y + 0.25 * K, s / 2 - 0.06);
+    add(g, box(s - 0.2, 0.4 * K, 0.06), M.velvet, 0, SEAT_Y + 0.27 * K, s / 2 - 0.15);
+    return g;
+  }
+  // a bar stool: brass pedestal, round velvet seat
+  const STOOL_Y = 0.76 * K;
+  function stool() {
+    const g = new THREE.Group();
+    add(g, cyl(0.45, 0.5, 0.08), M.brass, 0, 0.04, 0);
+    add(g, cyl(0.07, 0.07, STOOL_Y - 0.2, 10), M.brass, 0, (STOOL_Y - 0.2) / 2, 0);
+    add(g, new THREE.TorusGeometry(0.4, 0.04, 6, 20), M.brass, 0, STOOL_Y * 0.4, 0).rotation.x = Math.PI / 2;
+    add(g, cyl(0.6, 0.55, 0.22), M.velvet, 0, STOOL_Y - 0.1, 0);
+    return g;
+  }
+
+  // ---------- the pieces ----------
+  const list = [], seats = [];
+  // a seat on tile (col, row), its body pushed `inward` metres toward (fx, fz) (the direction it faces, a unit vector)
+  function seat(f, col, row, pose, fx, fz, inward, y, model) {
+    const [cx, cz] = centre(col, row), x = cx + fx * inward, z = cz + fz * inward, yaw = Math.atan2(-fx, -fz);
+    const s = { id: seats.length, furniture: f.id, col, row, pose, x, z, y, yaw, by: null };
+    if (model) { model.position.set(x, 0, z); model.rotation.y = yaw; tag(model, f.id); scene.add(model); f.parts.push(model); }
+    seats.push(s); f.seats.push(s);
+    return s;
+  }
+  function piece(kind, name, verb, tiles, top) {
+    const f = { id: list.length, kind, name, verb, tiles, seats: [], group: new THREE.Group(), parts: [], top };
+    tag(f.group, f.id); scene.add(f.group); list.push(f);
+    return f;
+  }
+  const tag = (o, id) => o.traverse((m) => { m.userData.furniture = id; });
+
+  // the dining table: cols 8 to 10, row 3, a white cloth, a plate and glass at every place, candlesticks down the middle
+  {
+    const TOP = 0.75 * K, c0 = 8, r = 3, L = 3 * T - 2.2, Wd = T - 1.6;
+    const f = piece('dining', 'Dining table', 'Sit down', [[c0, r], [c0 + 1, r], [c0 + 2, r]], TOP);
+    const [x0, z0] = centre(c0 + 1, r);
+    const g = f.group; g.position.set(x0, 0, z0);
+    for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) add(g, box(0.25, TOP - 0.1, 0.25), M.wood, sx * (L / 2 - 0.6), (TOP - 0.1) / 2, sz * (Wd / 2 - 0.5));
+    add(g, box(L, 0.12, Wd), M.wood, 0, TOP - 0.06, 0);
+    add(g, box(L + 0.3, 0.06, Wd + 0.3), M.cloth, 0, TOP + 0.02, 0);
+    for (const sz of [-1, 1]) add(g, box(L + 0.3, 0.7, 0.05), M.cloth, 0, TOP - 0.33, sz * (Wd / 2 + 0.15)); // the cloth hanging over the sides
+    for (const sx of [-1, 1]) add(g, box(0.05, 0.7, Wd + 0.3), M.cloth, sx * (L / 2 + 0.15), TOP - 0.33, 0);
+    for (const dx of [-T, 0, T]) { // candlesticks
+      add(g, cyl(0.12, 0.28, 0.9, 12), M.brass, dx, TOP + 0.5, 0);
+      add(g, cyl(0.07, 0.07, 0.6, 8), M.candle, dx, TOP + 1.25, 0);
+    }
+    const IN = 2.0;
+    for (let k = 0; k < 3; k++) {
+      seat(f, c0 + k, r - 1, 'sit', 0, 1, IN, SEAT_Y, chair());
+      seat(f, c0 + k, r + 1, 'sit', 0, -1, IN, SEAT_Y, chair());
+      for (const sz of [-1, 1]) { // a plate and a glass at each place on this side
+        const px = (k - 1) * T, pz = sz * (Wd / 2 - 0.75);
+        add(g, cyl(0.42, 0.34, 0.05, 20), M.china, px, TOP + 0.08, pz);
+        add(g, cyl(0.1, 0.07, 0.45, 10), M.glass[(k + (sz > 0 ? 1 : 0)) % 4], px + 0.7, TOP + 0.28, pz - sz * 0.25);
+      }
+    }
+    seat(f, c0 - 1, r, 'sit', 1, 0, IN, SEAT_Y, chair());
+    seat(f, c0 + 3, r, 'sit', -1, 0, IN, SEAT_Y, chair());
+    for (const sx of [-1, 1]) add(g, cyl(0.42, 0.34, 0.05, 20), M.china, sx * (L / 2 - 0.7), TOP + 0.08, 0);
+  }
+
+  // standing tables: a tall round table in a fitted white cover, three places round it
+  for (const [c, r, spots] of [[4, 5, [[-1, 0], [1, 0], [0, 1]]], [15, 2, [[-1, 0], [1, 0], [0, 1]]]]) {
+    const TOP = 1.1 * K;
+    const f = piece('mingle', 'Standing table', 'Join table', [[c, r]], TOP);
+    const [x0, z0] = centre(c, r), g = f.group; g.position.set(x0, 0, z0);
+    add(g, cyl(1.5, 1.5, 0.12, 28), M.cloth, 0, TOP - 0.06, 0);
+    add(g, cyl(1.45, 0.35, TOP * 0.55, 28), M.cloth, 0, TOP - 0.12 - TOP * 0.275, 0);  // the cover, drawn in at the waist
+    add(g, cyl(0.35, 1.0, TOP * 0.33, 28), M.cloth, 0, TOP * 0.165, 0);                  // and flaring to the floor
+    add(g, cyl(0.1, 0.07, 0.45, 10), M.glass[c % 4], 0.5, TOP + 0.22, 0.3);
+    add(g, cyl(0.1, 0.07, 0.45, 10), M.glass[(c + 1) % 4], -0.4, TOP + 0.22, -0.4);
+    for (const [dc, dr] of spots) seat(f, c + dc, r + dr, 'stand', -dc, -dr, 2.2, 0, null);
+  }
+
+  // the bar: a counter on the far wall's first row, cols 1 and 2, marble top and brass foot rail, bottles on the shelf
+  {
+    const TOP = 1.08 * K, c0 = 1, r = 0, L = 2 * T - 0.6, D = 2.4;
+    const f = piece('bar', 'Bar', 'Sit down', [[c0, r], [c0 + 1, r]], TOP);
+    const [xa] = centre(c0, r), [xb, z0] = centre(c0 + 1, r), g = f.group;
+    g.position.set((xa + xb) / 2, 0, z0 + 0.6);
+    add(g, box(L, TOP - 0.1, D), M.wood, 0, (TOP - 0.1) / 2, 0);
+    add(g, box(L + 0.3, 0.14, D + 0.35), M.marble, 0, TOP - 0.03, 0.1);
+    add(g, cyl(0.06, 0.06, L, 8), M.brass, 0, 0.45, D / 2 + 0.35).rotation.z = Math.PI / 2;
+    // the back bar: a shelf on the wall behind, with bottles
+    const zb = -BD / 2 - z0 - 0.6 + 0.6;
+    add(g, box(L, 0.12, 0.9), M.wood, 0, 3.6, zb);
+    for (let k = 0; k < 12; k++) {
+      const bx = -L / 2 + 0.6 + k * (L - 1.2) / 11, h = 0.9 + (k * 7 % 5) * 0.12;
+      add(g, cyl(0.16, 0.18, h, 10), M.glass[k % 4], bx, 3.66 + h / 2, zb);
+    }
+    for (let k = 0; k < 2; k++) seat(f, c0 + k, r + 1, 'sit', 0, -1, 2.2, STOOL_Y, stool());
+  }
+
+  // single chairs against the walls, facing into the room
+  for (const [c, r, fx, fz] of [[0, 2, 1, 0], [19, 5, -1, 0], [13, 0, 0, 1], [6, 7, 0, -1]]) {
+    const f = piece('chair', 'Chair', 'Sit down', [], SEAT_Y + 0.5 * K);
+    seat(f, c, r, 'sit', fx, fz, -1.6, SEAT_Y, chair()); // pushed back against the wall
+  }
+
+  for (const f of list) tag(f.group, f.id); // (its parts were added after it was made)
+  const key = (c, r) => c + ',' + r;
+  const blocked = new Set(list.flatMap((f) => f.tiles.map(([c, r]) => key(c, r))));
+  const seatTiles = new Set(seats.map((s) => key(s.col, s.row)));
+  // where a piece stands (for the popup over it): the middle of its tiles, or of its seat
+  const middle = (f) => { const pts = f.tiles.length ? f.tiles.map(([c, r]) => centre(c, r)) : f.seats.map((s) => [s.x, s.z]); return [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length]; };
+  const targets = () => list.flatMap((f) => [f.group, ...f.parts]);
+  const free = (f) => f.seats.filter((s) => s.by == null);
+  return { list, seats, blocked, seatTiles, targets, middle, free, key };
+};
+
 // ===== The people in the room: 20 NPCs and the 2 players' characters, all alike =====
-// Characters(THREE, scene, board, match) stands 22 figures on tiles of the board. Each is No Mans Land's Flame Wizard
+// Characters(THREE, scene, board, match, avoid) stands 22 figures on tiles of the board (none on the tiles in avoid,
+// a Set of 'col,row'). Each is No Mans Land's Flame Wizard
 // body (src/models3d.js) without the hat, the beard and the staff: a robe and a head. Nothing about a player's figure
 // tells it apart from the NPCs: the robe and skin colours, the tile and the facing are drawn from the match's random
 // numbers the same way for everyone, and the two players' figures get random places in the list (so not even the ids
 // give them away). Only the player's own view marks their figure (src/movement.js draws the circle under it).
 // board: { cols, rows, tile }. The board is centred on the origin, x across it, z down it.
 // Returns { list, height, players: [id of player 0's figure, id of player 1's], tileOf(x, z), centre(col, row) }.
-// Each in list: { id, player (0, 1 or null for an NPC), col, row, robe, skin, group }. col / row is the tile it stands on
+// Each in list: { id, player (0, 1 or null for an NPC), col, row, robe, skin, group, base (its scale), seat (the seat it
+// uses or is walking to, src/furniture.js), seated, pose (0 standing to 1 sitting) }. col / row is the tile it stands on
 // (or is walking to: src/movement.js keeps them up to date).
-const Characters = (THREE, scene, board, match) => {
+const Characters = (THREE, scene, board, match, avoid = new Set()) => {
   const NPCS = 20, PLAYERS = 2, COUNT = NPCS + PLAYERS;
   const SCALE = 2.2; // about 4 m tall on a 6 m tile: bigger than NML's units, so people read on the wide board
   // robes: muted, distinct colours, so each person can be told apart from any view (more than there are people, so
@@ -484,7 +637,7 @@ const Characters = (THREE, scene, board, match) => {
   const rr = match.rng;
   const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rr() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
   const tiles = [];
-  for (let r = 0; r < board.rows; r++) for (let c = 0; c < board.cols; c++) tiles.push([c, r]);
+  for (let r = 0; r < board.rows; r++) for (let c = 0; c < board.cols; c++) if (!avoid.has(c + ',' + r)) tiles.push([c, r]); // not on furniture or seats
   shuffle(tiles);
   const robes = shuffle(ROBES.slice());
   const playerIds = shuffle([...Array(COUNT).keys()]).slice(0, PLAYERS);
@@ -505,7 +658,7 @@ const Characters = (THREE, scene, board, match) => {
     g.name = 'who:' + i;
     scene.add(g);
     const p = playerIds.indexOf(i);
-    list.push({ id: i, player: p < 0 ? null : p, col, row, robe, skin: SKINS[skin], group: g });
+    list.push({ id: i, player: p < 0 ? null : p, col, row, robe, skin: SKINS[skin], group: g, base: SCALE, seat: null, seated: false, pose: 0 });
   }
   return { list, height: 1.85 * SCALE, radius: 0.6 * SCALE, players: playerIds, tileOf, centre };
 };
@@ -791,15 +944,20 @@ const Pies = (THREE, scene, people, opts = {}) => {
 //   moveTo(id, col, row)  walk figure id to that tile, round anyone standing in the way (8 directions, no cutting past
 //                         a corner that a figure fills); a tile someone stands on gives the nearest free tile instead.
 //                         Returns false when there's no way there.
+//   sit(id, seat)        walk to a seat (src/furniture.js) and sit down at it (or stand at it, at a standing table),
+//                         facing the table; the seat is held for id from now. Walking anywhere else gets up first.
+//   leave(id)            get up and step to the nearest free tile
 //   setMe(player)         whose view this is (0 or 1): only that player's figure gets the circle under it, and only that
 //                         player's planned path is drawn. The other player's figure looks like any NPC.
 //   update(dt), busy()    once per drawn frame; busy while anyone walks
 // Everyone walks at SPEED: NML's move speed 2 (metres a second; the Flame Wizard's), so a tile takes 3 s.
 // The path is a smooth curve through the tiles' middles; the arrow on the ground is that same curve, from the figure to
 // the end, shrinking as it walks.
-const Movement = (THREE, scene, board, people, opts = {}) => {
+const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   const SPEED = 2;          // m/s, NML's move speed 2
   const TURN = 9;           // how fast a figure turns to face where it walks (per second)
+  const POSE_S = 0.32;      // seconds to sit down or get up
+  const SIT_SQUASH = 0.3;   // a sitting figure is this much shorter (the robe folds over the seat)
   const ARROW_W = 0.9;      // the path arrow's width (m)
   const HEAD_L = 1.9, HEAD_W = 2.4; // its head
   const MINE = '#F2D16B';   // your marks: the circle, the arrow, the destination
@@ -824,9 +982,11 @@ const Movement = (THREE, scene, board, people, opts = {}) => {
   const key = (c, r) => c + ',' + r;
   const inside = (c, r) => c >= 0 && c < board.cols && r >= 0 && r < board.rows;
   const walks = new Map(); // id -> { curve, len, s }
-  // tiles taken by everyone but id: where they stand, and where they're walking to
-  function taken(id) {
-    const out = new Set();
+  // tiles taken for id: furniture, every seat but the one it's going to, and everyone else (where they stand and
+  // where they're walking to)
+  function taken(id, seat) {
+    const out = new Set([...furniture.blocked, ...furniture.seatTiles]);
+    if (seat) out.delete(key(seat.col, seat.row));
     for (const p of people.list) {
       if (p.id === id) continue;
       out.add(key(p.col, p.row));
@@ -874,15 +1034,20 @@ const Movement = (THREE, scene, board, people, opts = {}) => {
     }
     return best;
   }
-  function moveTo(id, col, row) {
+  // give up a seat (and get up, if sitting)
+  function release(who) { if (who.seat && who.seat.by === who.id) who.seat.by = null; who.seat = null; who.seated = false; }
+  function moveTo(id, col, row, seat = null) {
     const who = people.list[id]; if (!who || !inside(col, row)) return false;
-    const pos = who.group.position, blocked = taken(id), from = people.tileOf(pos.x, pos.z);
+    if (seat && seat.by != null && seat.by !== id) return false;
+    const pos = who.group.position, blocked = taken(id, seat), from = people.tileOf(pos.x, pos.z);
     let to = { col, row };
-    if (blocked.has(key(col, row))) to = nearestFree(col, row, blocked, from);
+    if (!seat && blocked.has(key(col, row))) to = nearestFree(col, row, blocked, from);
     if (!to) return false;
     blocked.delete(key(from.col, from.row));
     const tiles = path(from, to, blocked);
     if (!tiles) return false;
+    release(who);
+    if (seat) { seat.by = id; who.seat = seat; }
     // from where the figure is now, through the middles of the tiles after the one it's on, pulled straight: a corner
     // is kept only where a straight line to a later tile would brush someone (A* zigzags between equally short routes)
     const mids = (tiles.length > 1 ? tiles.slice(1) : tiles).map(([c, r]) => people.centre(c, r));
@@ -893,12 +1058,19 @@ const Movement = (THREE, scene, board, people, opts = {}) => {
       while (j > i && !clear(at, mids[j], blocked)) j--;
       at = mids[j]; pts.push(new THREE.Vector3(at[0], 0, at[1])); i = j + 1;
     }
-    if (pts[0].distanceTo(pts[pts.length - 1]) < 0.01 && pts.length === 2) { who.col = to.col; who.row = to.row; return true; }
+    if (seat) pts[pts.length - 1].set(seat.x, 0, seat.z); // a seat's place isn't the tile's middle: it's pulled to its table
+    if (pts[0].distanceTo(pts[pts.length - 1]) < 0.05) { walks.delete(id); who.col = to.col; who.row = to.row; if (seat) who.seated = true; return true; }
     const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
     walks.set(id, { curve, len: curve.getLength(), s: 0 });
     who.col = to.col; who.row = to.row;
     if (who.player === me) markDest(to);
     return true;
+  }
+  function sit(id, s) { return !!s && moveTo(id, s.col, s.row, s); }
+  function leave(id) {
+    const who = people.list[id], blocked = taken(id), t = people.tileOf(who.group.position.x, who.group.position.z);
+    const to = nearestFree(t.col, t.row, blocked, t);
+    return to ? moveTo(id, to.col, to.row) : false;
   }
   function markDest(to) { const [x, z] = people.centre(to.col, to.row); dest.position.x = x; dest.position.z = z; dest.visible = true; }
 
@@ -935,7 +1107,17 @@ const Movement = (THREE, scene, board, people, opts = {}) => {
       w.curve.getPointAt(u, tmp); w.curve.getTangentAt(u, tan);
       g.position.x = tmp.x; g.position.z = tmp.z;
       turnTo(g, Math.atan2(-tan.x, -tan.z), dt); // the body faces -z
-      if (w.s >= w.len) walks.delete(id);
+      if (w.s >= w.len) { walks.delete(id); const who = people.list[id]; if (who.seat) who.seated = true; }
+    }
+    // sitting down and getting up, and turning to face the table once there
+    for (const who of people.list) {
+      const g = who.group, want = who.seated && who.seat.pose === 'sit' ? 1 : 0;
+      if (who.seated && !walks.has(who.id)) turnTo(g, who.seat.yaw, dt);
+      if (who.pose !== want) who.pose = want > who.pose ? Math.min(1, who.pose + dt / POSE_S) : Math.max(0, who.pose - dt / POSE_S);
+      if (who.seated) who.sitY = who.seat.y; // kept while getting up, so it sinks back down from the same height
+      const k = who.pose * who.pose * (3 - 2 * who.pose), y = who.sitY || 0;
+      g.position.y = y * k;
+      g.scale.y = who.base * (1 - SIT_SQUASH * k);
     }
     const mine = people.list.find((p) => p.player === me);
     ring.position.x = mine.group.position.x; ring.position.z = mine.group.position.z;
@@ -943,7 +1125,58 @@ const Movement = (THREE, scene, board, people, opts = {}) => {
     if (w) drawArrow(w); else { arrow.visible = false; dest.visible = false; }
   }
   function setMe(p) { me = p; const w = walks.get(people.list.find((q) => q.player === me).id); dest.visible = false; if (w) { const who = people.list.find((q) => q.player === me); markDest(who); } }
-  return { moveTo, setMe, update, busy: () => walks.size > 0, me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
+  const settling = () => people.list.some((w) => (w.seated && !walks.has(w.id) && Math.abs(Math.atan2(Math.sin(w.seat.yaw - w.group.rotation.y), Math.cos(w.seat.yaw - w.group.rotation.y))) > 0.01)
+    || w.pose !== (w.seated && w.seat.pose === 'sit' ? 1 : 0));
+  return { moveTo, sit, leave, setMe, update, busy: () => walks.size > 0 || settling(), walking: (id) => walks.has(id), me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
+};
+
+// ===== The NPCs' own minds: now and then they sit down, get up, or wander =====
+// Brain(people, furniture, moves, match, board) lets every NPC (not the players' figures) act on its own: each waits a while,
+// then picks something to do. Standing, it may take a free seat or a place at a table (the nearer the likelier), or
+// stroll a few tiles; seated, it mostly stays a good while, then gets up and wanders off. Random numbers come from
+// the match, so a networked match plays the same for both. update(dt) every frame (cheap).
+const Brain = (people, furniture, moves, match, board) => {
+  const rr = match.rng;
+  const npcs = people.list.filter((p) => p.player === null);
+  const wait = new Map(npcs.map((p) => [p.id, 2 + rr() * 12])); // the first moves come soon after the party starts
+  const randomTile = (from, reach) => {
+    for (let k = 0; k < 20; k++) {
+      const c = from.col + Math.round((rr() * 2 - 1) * reach), r = from.row + Math.round((rr() * 2 - 1) * reach);
+      const key = c + ',' + r;
+      if (c < 0 || r < 0 || c >= board.cols || r >= board.rows || furniture.blocked.has(key) || furniture.seatTiles.has(key)) continue;
+      if (people.list.some((q) => q.col === c && q.row === r)) continue;
+      return { col: c, row: r };
+    }
+    return null;
+  };
+  function pickSeat(p) {
+    const free = furniture.seats.filter((s) => s.by == null);
+    if (!free.length) return null;
+    // weighted by nearness: a seat across the room is still possible, just less likely
+    const pos = p.group.position, w = free.map((s) => 1 / (8 + Math.hypot(s.x - pos.x, s.z - pos.z)));
+    let x = rr() * w.reduce((a, b) => a + b, 0);
+    for (let i = 0; i < free.length; i++) if ((x -= w[i]) <= 0) return free[i];
+    return free[free.length - 1];
+  }
+  function act(p) {
+    if (moves.walking(p.id)) return 3;
+    if (p.seated) {
+      if (rr() < 0.55) return 10 + rr() * 20;                       // stay a while longer
+      const t = randomTile(p, 4); if (t) moves.moveTo(p.id, t.col, t.row);
+      return 8 + rr() * 12;
+    }
+    const roll = rr();
+    if (roll < 0.45) { const s = pickSeat(p); if (s && moves.sit(p.id, s)) return 15 + rr() * 25; }
+    if (roll < 0.8) { const t = randomTile(p, 3); if (t) moves.moveTo(p.id, t.col, t.row); return 6 + rr() * 10; }
+    return 4 + rr() * 8;                                              // stand and chat where they are
+  }
+  function update(dt) {
+    for (const p of npcs) {
+      const t = wait.get(p.id) - dt;
+      wait.set(p.id, t > 0 ? t : act(p));
+    }
+  }
+  return { update };
 };
 
 // ===== The world: the room (floor and walls), the characters and the camera =====
@@ -993,9 +1226,11 @@ const World = (THREE, el, opts = {}) => {
 
   // ---------- the people ----------
   const match = opts.match || Match();
-  const people = Characters(THREE, scene, BOARD, match);
+  const furniture = Furniture(THREE, scene, BOARD);
+  const people = Characters(THREE, scene, BOARD, match, new Set([...furniture.blocked, ...furniture.seatTiles]));
   const pies = Pies(THREE, scene, people, { onEvent: (type, detail) => opts.onPie && opts.onPie(type, detail) });
-  const moves = Movement(THREE, scene, BOARD, people, { me: opts.me || 0 });
+  const moves = Movement(THREE, scene, BOARD, people, furniture, { me: opts.me || 0 });
+  const brain = Brain(people, furniture, moves, match, BOARD);
 
   // ---------- taps: on a person (or their pie) shows the pie and the next taps add pieces; on a tile walks you there ----------
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
@@ -1006,6 +1241,49 @@ const World = (THREE, el, opts = {}) => {
     const hit = ray.intersectObjects([...people.list.map((n) => n.group), ...pies.targets()], true).find((h) => h.object.userData.who != null);
     return hit ? hit.object.userData.who : null;
   }
+  function furnitureAt() { // (after personAt, which aimed the ray)
+    const hit = ray.intersectObjects(furniture.targets(), true).find((h) => h.object.userData.furniture != null);
+    return hit ? hit.object.userData.furniture : null;
+  }
+
+  // ---------- the popup over a piece of furniture: "Sit down" (or "Join table"), or "Get up" where you are ----------
+  const pop = opts.popup; // { el, name, info, go } (elements, from the page)
+  let popFor = null;
+  const mySeatAt = (f) => { const me = moves.mine(); return me.seat && me.seat.furniture === f.id ? me.seat : null; };
+  function openPop(id) {
+    if (!pop) return;
+    popFor = furniture.list[id]; refreshPop();
+    pop.el.hidden = false; placePop(); dirty = true;
+  }
+  function refreshPop() { // its text, again as seats come and go
+    const f = popFor, mine = mySeatAt(f), free = furniture.free(f).length, n = f.seats.length;
+    pop.name.textContent = f.name;
+    pop.info.textContent = n === 1 ? (mine ? 'Your seat' : free ? 'Free' : 'Taken') : `${free} of ${n} ${f.kind === 'mingle' ? 'places' : 'seats'} free`;
+    pop.go.textContent = mine ? (mine.pose === 'sit' ? 'Get up' : 'Leave table') : f.verb;
+    pop.go.disabled = !mine && !free;
+  }
+  function closePop() { if (pop) pop.el.hidden = true; popFor = null; }
+  const v3 = new THREE.Vector3();
+  function placePop() {
+    if (!popFor || !pop) return;
+    const [x, z] = furniture.middle(popFor), r = renderer.domElement.getBoundingClientRect();
+    v3.set(x, popFor.top + 1.5, z).project(camera);
+    if (v3.z > 1) { pop.el.style.visibility = 'hidden'; return; }
+    pop.el.style.visibility = '';
+    const w = pop.el.offsetWidth, h = pop.el.offsetHeight;
+    const px = Math.max(8, Math.min(r.width - w - 8, (v3.x + 1) / 2 * r.width - w / 2)), py = Math.max(8, Math.min(r.height - h - 8, (1 - v3.y) / 2 * r.height - h - 10));
+    pop.el.style.transform = `translate(${px}px, ${py}px)`;
+  }
+  if (pop) pop.go.addEventListener('click', () => {
+    const f = popFor; if (!f) return;
+    const me = moves.mine();
+    if (mySeatAt(f)) moves.leave(me.id);
+    else {
+      const pos = me.group.position, free = furniture.free(f).sort((a, b) => Math.hypot(a.x - pos.x, a.z - pos.z) - Math.hypot(b.x - pos.x, b.z - pos.z));
+      for (const s of free) if (moves.sit(me.id, s)) break;
+    }
+    closePop(); dirty = true;
+  });
   let lastPerson = null;
   const tapPerson = (id) => { lastPerson = id; pies.add(id); dirty = true; };
   // Space: another piece for the person tapped last
@@ -1018,7 +1296,10 @@ const World = (THREE, el, opts = {}) => {
     onInput: () => { dirty = true; },
     onTap: (point, cx, cy) => {
       const id = personAt(cx, cy);
-      if (id != null) { tapPerson(id); return; }
+      if (id != null) { closePop(); tapPerson(id); return; }
+      const f = furnitureAt();
+      if (f != null) { openPop(f); return; }
+      closePop();
       const t = point && people.tileOf(point.x, point.z);
       if (t) { moves.moveTo(moves.mine().id, t.col, t.row); dirty = true; }
     },
@@ -1037,6 +1318,8 @@ const World = (THREE, el, opts = {}) => {
   let last = performance.now(), frozen = false; // freeze(true) stops drawing (for stepping frames by hand in tests)
   function frame(now) {
     const dt = Math.min(0.1, (now - last) / 1000); last = now;
+    brain.update(dt);
+    if (popFor) refreshPop();
     if (!frozen && (dirty || cam.busy() || pies.busy() || moves.busy())) {
       dirty = false;
       cam.update(dt);
@@ -1049,17 +1332,19 @@ const World = (THREE, el, opts = {}) => {
       scene.fog.near = Math.max(90, d * 0.85); scene.fog.far = Math.max(220, d * 2.2);
       if (Math.abs(camera.far - Math.max(600, d * 3)) > 1) { camera.far = Math.max(600, d * 3); camera.updateProjectionMatrix(); }
       renderer.render(scene, camera);
+      placePop();
     }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
-  return { scene, camera: cam, cam3: camera, match, people, pies, moves, setMe: (p) => { moves.setMe(p); dirty = true; }, renderer, render: () => { dirty = true; }, freeze: (on) => { frozen = on; dirty = true; } };
+  return { scene, camera: cam, cam3: camera, match, people, furniture, pies, moves, closePop, setMe: (p) => { moves.setMe(p); dirty = true; }, renderer, render: () => { dirty = true; }, freeze: (on) => { frozen = on; dirty = true; } };
 };
 
-window.agenda = World(THREE, document.getElementById('world'));
+const $ = (id) => document.getElementById(id);
+window.agenda = World(THREE, $('world'), { popup: { el: $('pop'), name: $('pop-name'), info: $('pop-info'), go: $('pop-go') } });
 // testing hidden identity on one screen: see the match as either player (each sees only their own circle and path)
-const seat = document.getElementById('seat');
+const seat = $('seat');
 seat.addEventListener('click', () => { const p = 1 - agenda.moves.me(); agenda.setMe(p); seat.textContent = `You are player ${p + 1} · switch`; });
 </script>
 </body>

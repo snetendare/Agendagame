@@ -1,14 +1,16 @@
 // ===== The people in the room: 20 NPCs and the 2 players' characters, all alike =====
-// Characters(THREE, scene, board, match) stands 22 figures on tiles of the board. Each is No Mans Land's Flame Wizard
+// Characters(THREE, scene, board, match, avoid) stands 22 figures on tiles of the board (none on the tiles in avoid,
+// a Set of 'col,row'). Each is No Mans Land's Flame Wizard
 // body (src/models3d.js) without the hat, the beard and the staff: a robe and a head. Nothing about a player's figure
 // tells it apart from the NPCs: the robe and skin colours, the tile and the facing are drawn from the match's random
 // numbers the same way for everyone, and the two players' figures get random places in the list (so not even the ids
 // give them away). Only the player's own view marks their figure (src/movement.js draws the circle under it).
 // board: { cols, rows, tile }. The board is centred on the origin, x across it, z down it.
 // Returns { list, height, players: [id of player 0's figure, id of player 1's], tileOf(x, z), centre(col, row) }.
-// Each in list: { id, player (0, 1 or null for an NPC), col, row, robe, skin, group }. col / row is the tile it stands on
+// Each in list: { id, player (0, 1 or null for an NPC), col, row, robe, skin, group, base (its scale), seat (the seat it
+// uses or is walking to, src/furniture.js), seated, pose (0 standing to 1 sitting) }. col / row is the tile it stands on
 // (or is walking to: src/movement.js keeps them up to date).
-const Characters = (THREE, scene, board, match) => {
+const Characters = (THREE, scene, board, match, avoid = new Set()) => {
   const NPCS = 20, PLAYERS = 2, COUNT = NPCS + PLAYERS;
   const SCALE = 2.2; // about 4 m tall on a 6 m tile: bigger than NML's units, so people read on the wide board
   // robes: muted, distinct colours, so each person can be told apart from any view (more than there are people, so
@@ -26,7 +28,7 @@ const Characters = (THREE, scene, board, match) => {
   const rr = match.rng;
   const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rr() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
   const tiles = [];
-  for (let r = 0; r < board.rows; r++) for (let c = 0; c < board.cols; c++) tiles.push([c, r]);
+  for (let r = 0; r < board.rows; r++) for (let c = 0; c < board.cols; c++) if (!avoid.has(c + ',' + r)) tiles.push([c, r]); // not on furniture or seats
   shuffle(tiles);
   const robes = shuffle(ROBES.slice());
   const playerIds = shuffle([...Array(COUNT).keys()]).slice(0, PLAYERS);
@@ -47,7 +49,7 @@ const Characters = (THREE, scene, board, match) => {
     g.name = 'who:' + i;
     scene.add(g);
     const p = playerIds.indexOf(i);
-    list.push({ id: i, player: p < 0 ? null : p, col, row, robe, skin: SKINS[skin], group: g });
+    list.push({ id: i, player: p < 0 ? null : p, col, row, robe, skin: SKINS[skin], group: g, base: SCALE, seat: null, seated: false, pose: 0 });
   }
   return { list, height: 1.85 * SCALE, radius: 0.6 * SCALE, players: playerIds, tileOf, centre };
 };
