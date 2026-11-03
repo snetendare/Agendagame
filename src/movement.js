@@ -44,10 +44,10 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   const key = (c, r) => c + ',' + r;
   const inside = (c, r) => c >= 0 && c < board.cols && r >= 0 && r < board.rows;
   const walks = new Map(); // id -> { curve, len, s }
-  // tiles taken for id: furniture, every seat but the one it's going to, and everyone else (where they stand and
-  // where they're walking to)
+  // tiles taken for id: furniture, every chair or stool but the one it's going to, and everyone else (where they
+  // stand and where they're walking to). A standing table's empty places are open floor.
   function taken(id, seat) {
-    const out = new Set([...furniture.blocked, ...furniture.seatTiles]);
+    const out = new Set([...furniture.blocked, ...furniture.chairTiles]);
     if (seat) out.delete(key(seat.col, seat.row));
     for (const p of people.list) {
       if (p.id === id) continue;

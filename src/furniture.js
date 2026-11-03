@@ -132,6 +132,8 @@ const Furniture = (THREE, scene, board) => {
   const key = (c, r) => c + ',' + r;
   const blocked = new Set(list.flatMap((f) => f.tiles.map(([c, r]) => key(c, r))));
   const seatTiles = new Set(seats.map((s) => key(s.col, s.row)));
+  // tiles with a chair or stool on them: walked round. A standing table's places are open floor until someone stands there.
+  const chairTiles = new Set(seats.filter((s) => s.pose === 'sit').map((s) => key(s.col, s.row)));
   // where a piece stands (for the popup over it): the middle of its tiles, or of its seat
   const middle = (f) => { const pts = f.tiles.length ? f.tiles.map(([c, r]) => centre(c, r)) : f.seats.map((s) => [s.x, s.z]); return [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length]; };
   const targets = () => list.flatMap((f) => [f.group, ...f.parts]);
@@ -162,5 +164,5 @@ const Furniture = (THREE, scene, board) => {
     shape.holes.push(hole);
     outline.geometry.dispose(); outline.geometry = new THREE.ShapeGeometry(shape, 8);
   }
-  return { list, seats, blocked, seatTiles, targets, middle, free, key, highlight };
+  return { list, seats, blocked, seatTiles, chairTiles, targets, middle, free, key, highlight };
 };
