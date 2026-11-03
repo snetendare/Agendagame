@@ -1,9 +1,9 @@
 // ===== The world: the board, the land around it, the NPCs and the camera =====
 // World(THREE, el) builds the scene into el and draws it whenever something changed (the camera moving, a resize, the
-// first frame). The board is BOARD.cols x BOARD.rows tiles of BOARD.tile metres, centred on the origin.
+// first frame, a pie animating). The board is BOARD.cols x BOARD.rows tiles of BOARD.tile metres, centred on the origin.
 const BOARD = { cols: 20, rows: 8, tile: 6 }; // NML's tiles (6 m), on a wider board: 120 x 48 m
 
-const World = (THREE, el) => {
+const World = (THREE, el, opts = {}) => {
   const T = BOARD.tile, BW = BOARD.cols * T, BD = BOARD.rows * T;
 
   // ---------- three.js basics, set up as on NML's 3D board ----------
@@ -45,11 +45,29 @@ const World = (THREE, el) => {
 
   // ---------- the people ----------
   const npcs = NPCs(THREE, scene, BOARD);
+  const pies = Pies(THREE, scene, npcs, { onEvent: (type, detail) => opts.onPie && opts.onPie(type, detail) });
+
+  // ---------- picking: a tap on a person (or their pie) shows the pie, the next taps add pieces ----------
+  const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+  function personAt(cx, cy) {
+    const r = renderer.domElement.getBoundingClientRect();
+    ndc.set((cx - r.left) / r.width * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
+    ray.setFromCamera(ndc, camera);
+    const hit = ray.intersectObjects([...npcs.list.map((n) => n.group), ...pies.targets()], true).find((h) => h.object.userData.npc != null || /^npc:/.test(h.object.parent.name));
+    if (!hit) return null;
+    return hit.object.userData.npc != null ? hit.object.userData.npc : +hit.object.parent.name.slice(4);
+  }
+  let lastPerson = null;
+  const tapPerson = (id) => { lastPerson = id; pies.add(id); dirty = true; };
+  // Space: another piece for the person tapped last
+  const onKey = (e) => { if (e.code === 'Space' && lastPerson != null) { e.preventDefault(); tapPerson(lastPerson); } };
+  window.addEventListener('keydown', onKey);
 
   // ---------- the camera: NML's controls, starting in (and going back to) the tilted view ----------
   const cam = Camera3D(THREE, camera, renderer.domElement, {
     width: BW, depth: BD, home: 1, farTop: npcs.height + 1,
     onInput: () => { dirty = true; },
+    onTap: (point, cx, cy) => { const id = personAt(cx, cy); if (id != null) tapPerson(id); },
   });
 
   function size() {
@@ -62,12 +80,13 @@ const World = (THREE, el) => {
   window.addEventListener('resize', size);
   size();
 
-  let last = performance.now();
+  let last = performance.now(), frozen = false; // freeze(true) stops drawing (for stepping frames by hand in tests)
   function frame(now) {
     const dt = Math.min(0.1, (now - last) / 1000); last = now;
-    if (dirty || cam.busy()) {
+    if (!frozen && (dirty || cam.busy() || pies.busy())) {
       dirty = false;
       cam.update(dt);
+      pies.update(dt, camera);
       // the fog and the far plane follow how far back the camera stands: a tall phone screen has to stand far
       // back to fit the wide board, further than NML's fog (90 to 220 m) reaches
       const d = camera.position.length();
@@ -79,5 +98,5 @@ const World = (THREE, el) => {
   }
   requestAnimationFrame(frame);
 
-  return { scene, camera: cam, npcs, renderer, render: () => { dirty = true; } };
+  return { scene, camera: cam, cam3: camera, npcs, pies, renderer, render: () => { dirty = true; }, freeze: (on) => { frozen = on; dirty = true; } };
 };

@@ -11,10 +11,13 @@
 html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; overscroll-behavior: none; }
 #world { position: fixed; inset: 0; }
 #world canvas { display: block; }
+.hint { position: fixed; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); max-width: calc(100% - 32px);
+  padding: 7px 12px; border-radius: 6px; background: rgba(13, 19, 21, 0.62); color: #DCE4E2; font: 13px/1.35 system-ui, sans-serif; text-align: center; pointer-events: none; }
 </style>
 </head>
 <body>
 <div id="world"></div>
+<div class="hint">Tap a person to show their pie. Tap again to add a piece. Space adds another.</div>
 <script type="module">
 import * as THREE from '/*THREE_URL*/';
 /*CODE*/
