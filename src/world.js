@@ -1,6 +1,6 @@
 // ===== The world: the board, the land around it, the NPCs and the camera =====
 // World(THREE, el) builds the scene into el and draws it whenever something changed (the camera moving, a resize, the
-// scenery finishing loading). The board is BOARD.cols x BOARD.rows tiles of BOARD.tile metres, centred on the origin.
+// first frame). The board is BOARD.cols x BOARD.rows tiles of BOARD.tile metres, centred on the origin.
 const BOARD = { cols: 20, rows: 8, tile: 6 }; // NML's tiles (6 m), on a wider board: 120 x 48 m
 
 const World = (THREE, el) => {
@@ -34,17 +34,14 @@ const World = (THREE, el) => {
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
   scene.add(ground);
-  // the land around the board
+  // the land around the board (flat, no trees or plants: no map art yet)
   const around = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), new THREE.MeshLambertMaterial({ color: '#141b1d' }));
   around.rotation.x = -Math.PI / 2; around.position.y = -0.05; around.receiveShadow = true;
   scene.add(around);
 
-  // ---------- trees, bushes and grass round the board, and small plants on it (the meadow) ----------
+  // the meadow's sky and surrounding land (NML's colours); no scenery models yet
   let dirty = true;
-  const look = { cols: BOARD.cols, rows: BOARD.rows, look: 'meadow', id: 'agenda' };
-  const scenery = Scenery3D(THREE, scene, { renderer, onReady: () => { scenery.update(look, () => 0, BW, BD, T); dirty = true; } });
-  const bi = scenery.biome('meadow');
-  scene.background.set(bi.sky); scene.fog.color.set(bi.sky); around.material.color.set(bi.land);
+  scene.background.set('#A3B6B4'); scene.fog.color.set('#A3B6B4'); around.material.color.set('#64764D');
 
   // ---------- the people ----------
   const npcs = NPCs(THREE, scene, BOARD);
