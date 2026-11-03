@@ -103,8 +103,9 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
     }
     return best;
   }
-  // (walks there, or the next leg of the way: nobody walks more than moves.REACH tiles in one go)
-  const goTo = (id, t) => (L[id].col === t.col && L[id].row === t.row && atRest(id)) || moves.moveTo(id, t.col, t.row);
+  // (walks there, or the next leg of the way: nobody walks more than moves.REACH tiles in one go; already on the way
+  // there, it keeps going)
+  const goTo = (id, t) => (L[id].col === t.col && L[id].row === t.row) || moves.moveTo(id, t.col, t.row);
   function wander(id, reach) {
     for (let k = 0; k < 20; k++) {
       const c = L[id].col + Math.round((rr() * 2 - 1) * reach), r = L[id].row + Math.round((rr() * 2 - 1) * reach);
@@ -310,13 +311,15 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
     it.t += dt;
     if (it.asking) return;
     if (it.t > (L[id].player === null ? 75 : 40)) return done(id); // gave up
-    if (!atRest(id)) return;
+    // an NPC plans its next leg when it gets somewhere; a player's order turns them round mid-walk
+    const still = atRest(id);
+    if (!still && L[id].player === null) return;
     if (it.kind === 'talk') {
       const tg = it.target, cv = convos.get(S[tg].convo);
       if (cv && cv.kind === 'stand') { S[id].intent = { kind: 'join', convo: cv.id, t: it.t }; return; }
       if (L[tg].seated) { S[id].intent = { kind: 'sit', furniture: L[tg].seat.furniture, t: it.t }; return; }
       if (S[tg].intent && L[tg].player === null) return; // busy: wait a moment
-      if (touching(id, tg) && atRest(tg)) {
+      if (still && touching(id, tg) && atRest(tg)) {
         it.asking = true;
         return ask(id, tg, 'talk', (ok, why) => {
           done(id);
@@ -330,7 +333,7 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
       const cv = it.kind === 'join' ? convos.get(it.convo) : null;
       const ids = cv ? [...cv.talkers] : [it.by];
       if (!ids.length || (cv == null && it.kind === 'join')) return done(id);
-      if (ids.some((q) => touching(id, q))) {
+      if (still && ids.some((q) => touching(id, q))) {
         done(id);
         if (it.kind === 'join') join(cv, id);
         else if (!S[it.by].convo) startConvo(it.by, id);
@@ -340,6 +343,7 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
       if (!spot || !goTo(id, spot)) done(id);
     } else if (it.kind === 'sit') {
       if (L[id].seated && L[id].seat.furniture === it.furniture) return done(id);
+      if (!still && L[id].seat && L[id].seat.furniture === it.furniture) return; // on the way to a seat there
       const f = furniture.list[it.furniture], here = pos(id);
       const free = furniture.free(f).sort((a, b) => Math.hypot(a.x - here.x, a.z - here.z) - Math.hypot(b.x - here.x, b.z - here.z));
       if (S[id].convo) leave(id);

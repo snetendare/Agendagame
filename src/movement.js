@@ -44,6 +44,7 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   for (const m of [ringLine, ringFill]) { m.rotation.x = -Math.PI / 2; m.renderOrder = 2; ring.add(m); }
   ring.position.y = 0.05; scene.add(ring);
   const arrow = new THREE.Mesh(new THREE.BufferGeometry(), markMat(0.85)); arrow.renderOrder = 3; arrow.visible = false; scene.add(arrow);
+  const ghostArrow = new THREE.Mesh(new THREE.BufferGeometry(), markMat(0.4)); ghostArrow.renderOrder = 3; ghostArrow.visible = false; scene.add(ghostArrow);
   // the destination: a square just inside the tile
   const sq = (T / 2 - 0.35) * Math.SQRT2;
   const dest = new THREE.Mesh(new THREE.RingGeometry(sq - 0.3, sq, 4, 1, Math.PI / 4), markMat(0.9));
@@ -124,35 +125,50 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   }
   // give up a seat (and get up, if sitting)
   function release(who) { if (who.seat && who.seat.by === who.id) who.seat.by = null; who.seat = null; who.seated = false; }
-  function moveTo(id, col, row, seat = null) {
-    const who = people.list[id]; if (!who || !inside(col, row)) return false;
-    if (seat && seat.by != null && seat.by !== id) return false;
-    const pos = who.group.position, blocked = taken(id, seat), from = people.tileOf(pos.x, pos.z);
+  // the way id would walk to (col, row) (or to seat) starting from the point (x, z): null if there's no way there
+  function plan(id, col, row, seat, x, z) {
+    if (!inside(col, row) || (seat && seat.by != null && seat.by !== id)) return null;
+    const blocked = taken(id, seat), from = people.tileOf(x, z); if (!from) return null;
     let to = { col, row };
     if (!seat && blocked.has(key(col, row))) to = nearestFree(col, row, blocked, from);
-    if (!to) return false;
+    if (!to) return null;
     blocked.delete(key(from.col, from.row));
     let tiles = path(from, to, blocked);
-    if (!tiles) return false;
+    if (!tiles) return null;
     let full = true;
     if (tiles.length - 1 > REACH) { // too far for one go: walk the first REACH steps of the way
       tiles = tiles.slice(0, REACH + 1); full = false; seat = null;
       const [c, r] = tiles[tiles.length - 1]; to = { col: c, row: r };
     }
-    release(who); who.faceAt = null; who.spot = null;
-    if (seat) { seat.by = id; who.seat = seat; }
-    // from where the figure is now, through the middles of the tiles after the one it's on, pulled straight: a corner
-    // is kept only where a straight line to a later tile would brush someone (A* zigzags between equally short routes)
+    // from the start point, through the middles of the tiles after the one it's on, pulled straight: a corner is kept
+    // only where a straight line to a later tile would brush someone (A* zigzags between equally short routes)
     const mids = (tiles.length > 1 ? tiles.slice(1) : tiles).map(([c, r]) => people.centre(c, r));
-    const pts = [new THREE.Vector3(pos.x, 0, pos.z)];
-    let at = [pos.x, pos.z], i = 0;
+    const pts = [new THREE.Vector3(x, 0, z)];
+    let at = [x, z], i = 0;
     while (i < mids.length) {
       let j = mids.length - 1;
       while (j > i && !clear(at, mids[j], blocked)) j--;
       at = mids[j]; pts.push(new THREE.Vector3(at[0], 0, at[1])); i = j + 1;
     }
     if (seat) pts[pts.length - 1].set(seat.x, 0, seat.z); // a seat's place isn't the tile's middle: it's pulled to its table
-    if (who.player === me) pending = false;
+    return { to, mids, pts, full, seat };
+  }
+  // where id will be when the next tick comes: the end of the step it's taking, or where it stands
+  function nextPoint(id) {
+    const w = walks.get(id), g = people.list[id].group.position;
+    if (!w) return [g.x, g.z];
+    w.curve.getPointAt(Math.min(1, w.marks[w.k] / w.len), tmp); return [tmp.x, tmp.z];
+  }
+  // A walk already under way can be changed at any time: the new way starts from where the figure is when it's ordered
+  // (a tick, so at a tile's middle).
+  function moveTo(id, col, row, seat = null) {
+    const who = people.list[id]; if (!who) return false;
+    const pos = who.group.position, pl = plan(id, col, row, seat, pos.x, pos.z);
+    if (!pl) return false;
+    const { to, mids, pts, full } = pl; seat = pl.seat;
+    release(who); who.faceAt = null; who.spot = null;
+    if (seat) { seat.by = id; who.seat = seat; }
+    if (who.player === me) clearPreview();
     if (pts[0].distanceTo(pts[pts.length - 1]) < 0.05) { walks.delete(id); who.col = to.col; who.row = to.row; if (seat) who.seated = true; return full || 'leg'; }
     const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal'), len = curve.getLength();
     // how far along the curve each tile's middle is: one of these a tick (the last is the end, at a seat its place)
@@ -171,7 +187,20 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   }
   const posTile = (id) => { const g = people.list[id].group.position; return people.tileOf(g.x, g.z); };
   function inReach(id, col, row) { const t = posTile(id); return !!t && Math.max(Math.abs(t.col - col), Math.abs(t.row - row)) <= REACH; }
-  function preview(col, row) { if (col == null) { pending = false; return; } pending = true; markDest({ col, row }); }
+  // preview(col, row): a walk you've ordered for the next tick. Its destination shows at once, and so does the way
+  // there, fainter, from where you'll be when the tick comes; the arrow of a walk under way stops at that point.
+  let ghost = null; // { curve, len, s }
+  function clearPreview() { pending = false; ghost = null; ghostArrow.visible = false; }
+  function preview(col, row) {
+    if (col == null) { clearPreview(); return; }
+    const who = people.list.find((p) => p.player === me), [x, z] = nextPoint(who.id), pl = plan(who.id, col, row, null, x, z);
+    pending = true; markDest(pl ? pl.to : { col, row });
+    ghost = null; ghostArrow.visible = false;
+    if (pl && pl.pts.length > 1 && pl.pts[0].distanceTo(pl.pts[pl.pts.length - 1]) > 0.05) {
+      const curve = new THREE.CatmullRomCurve3(pl.pts, false, 'centripetal');
+      ghost = { curve, len: curve.getLength(), s: 0 }; drawArrow(ghostArrow, ghost, ghost.len);
+    }
+  }
   function sit(id, s) { return !!s && moveTo(id, s.col, s.row, s); }
   function leave(id) {
     const who = people.list[id], blocked = taken(id), t = people.tileOf(who.group.position.x, who.group.position.z);
@@ -182,10 +211,11 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
 
   // ---------- the arrow: a flat ribbon along the rest of the curve, with a head ----------
   const tmp = new THREE.Vector3(), tan = new THREE.Vector3();
-  function drawArrow(w) {
-    const left = w.len - w.s;
-    if (left < 0.05) { arrow.visible = false; return; }
-    const head = Math.min(HEAD_L, left), shaftEnd = w.len - head;
+  // the arrow mesh along w's curve from where it is (w.s) to end; with no head when it stops short of the curve's end
+  function drawArrow(mesh, w, end = w.len) {
+    const left = end - w.s;
+    if (left < 0.05) { mesh.visible = false; return; }
+    const tip = end >= w.len - 0.01, head = tip ? Math.min(HEAD_L, left) : 0, shaftEnd = end - head;
     const pos = [], idx = [];
     const at = (s) => { const u = Math.min(1, Math.max(0, s / w.len)); w.curve.getPointAt(u, tmp); w.curve.getTangentAt(u, tan); return [tmp.x, tmp.z, tan.x, tan.z]; };
     const n = Math.max(1, Math.ceil((shaftEnd - w.s) / 0.4));
@@ -194,13 +224,15 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
       pos.push(x + px, 0.06, z + pz, x - px, 0.06, z - pz);
       if (i) { const b = pos.length / 3 - 4; idx.push(b, b + 1, b + 2, b + 1, b + 3, b + 2); }
     }
-    const [hx, hz, tx, tz] = at(shaftEnd), l = Math.hypot(tx, tz) || 1, [ex, ez] = at(w.len), b = pos.length / 3;
-    const k = HEAD_W / 2 * Math.min(1, head / HEAD_L);
-    pos.push(hx - tz / l * k, 0.06, hz + tx / l * k, hx + tz / l * k, 0.06, hz - tx / l * k, ex, 0.06, ez);
-    idx.push(b, b + 1, b + 2);
+    if (tip) {
+      const [hx, hz, tx, tz] = at(shaftEnd), l = Math.hypot(tx, tz) || 1, [ex, ez] = at(w.len), b = pos.length / 3;
+      const k = HEAD_W / 2 * Math.min(1, head / HEAD_L);
+      pos.push(hx - tz / l * k, 0.06, hz + tx / l * k, hx + tz / l * k, 0.06, hz - tx / l * k, ex, 0.06, ez);
+      idx.push(b, b + 1, b + 2);
+    }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx);
-    arrow.geometry.dispose(); arrow.geometry = g; arrow.visible = true;
+    mesh.geometry.dispose(); mesh.geometry = g; mesh.visible = true;
   }
 
   // ---------- walking ----------
@@ -211,6 +243,7 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   function tick() {
     for (const [id, w] of walks) {
       w.s = w.marks[w.k];
+      const g = people.list[id].group; w.curve.getPointAt(Math.min(1, w.s / w.len), tmp); g.position.x = tmp.x; g.position.z = tmp.z;
       if (w.k >= w.marks.length - 1) { arrive(id); continue; }
       w.from = w.s; w.k++;
     }
@@ -247,10 +280,10 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
     const mine = people.list.find((p) => p.player === me);
     ring.position.x = mine.group.position.x; ring.position.z = mine.group.position.z;
     const w = walks.get(mine.id);
-    if (w) drawArrow(w); else { arrow.visible = false; dest.visible = pending; }
+    if (w) drawArrow(arrow, w, ghost ? w.marks[w.k] : w.len); else { arrow.visible = false; dest.visible = pending; }
     drawReach(posTile(mine.id) || mine);
   }
-  function setMe(p) { me = p; pending = false; reachAt = ''; const w = walks.get(people.list.find((q) => q.player === me).id); dest.visible = false; if (w) { const who = people.list.find((q) => q.player === me); markDest(who); } }
+  function setMe(p) { me = p; clearPreview(); reachAt = ''; const w = walks.get(people.list.find((q) => q.player === me).id); dest.visible = false; if (w) { const who = people.list.find((q) => q.player === me); markDest(who); } }
   const off = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
   // face(id, x, z): standing still, turn to look at that point (someone you talk to, the middle of a group)
   function face(id, x, z) { const who = people.list[id]; who.faceAt = [x, z]; }

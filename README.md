@@ -52,6 +52,8 @@ starts there, and Esc goes back to it. Taps in every view go to the game, so you
   on the next tick; a tile outside it is too far, so you steer across the room leg by leg. The destination shows as
   soon as you tap, the gold arrow once you walk. Only you see them.
 - Talk, Join conversation, Listen in, Join them and Sit down need the person or a free seat within your reach.
+- You can change course while walking. A new tap (a tile, a person, a table) takes over on the next tick, from the
+  tile you're stepping onto. Until then the new way shows as a fainter arrow from there.
 - Tap a table, the bar or a chair: it lights up (a warm glow and a gold outline on the floor) and a popup offers
   Sit down (Join table at a standing table), or Get up where you sit.
 - Tap a person for a popup about them, with their personal chart (below): Talk, Join conversation, Listen in, Join them (at a table), Speak to them,
