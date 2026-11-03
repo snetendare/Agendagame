@@ -5,7 +5,13 @@
 html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; overscroll-behavior: none; }
 #world { position: fixed; inset: 0; }
 #world canvas { display: block; }
-.seat { position: fixed; top: calc(10px + env(safe-area-inset-top, 0px)); right: max(10px, env(safe-area-inset-right, 0px)); padding: 6px 10px; border: 0; border-radius: 6px;
+.dev-bar { position: fixed; top: calc(10px + env(safe-area-inset-top, 0px)); right: max(10px, env(safe-area-inset-right, 0px)); display: flex; gap: 6px; }
+.labels { position: fixed; inset: 0; pointer-events: none; }
+.dev { position: absolute; left: 0; top: 0; padding: 2px 5px; border-radius: 4px; background: rgba(20, 14, 10, 0.78); color: #F4EADC; font: 11px/1.25 ui-monospace, Menlo, monospace; white-space: nowrap; }
+.dev[hidden], .toast[hidden] { display: none; }
+.toast { position: fixed; left: 50%; bottom: calc(56px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); max-width: calc(100% - 32px); padding: 8px 14px; border-radius: 8px;
+  background: rgba(36, 27, 21, 0.94); color: #EFE6DA; font: 13px/1.35 system-ui, sans-serif; text-align: center; pointer-events: none; }
+.seat { padding: 6px 10px; border: 0; border-radius: 6px;
   background: rgba(52, 40, 32, 0.78); color: #EFE6DA; font: 12px/1.3 system-ui, sans-serif; cursor: pointer; }
 /* the popup over furniture: a small card, the action as one clear button */
 .pop { position: fixed; left: 0; top: 0; display: grid; gap: 2px 12px; grid-template-columns: auto auto; align-items: center; padding: 8px 8px 8px 12px; border-radius: 8px;
@@ -14,6 +20,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; o
 .pop-name { font-weight: 600; grid-column: 1; }
 .pop-info { grid-column: 1; color: #BFAF9C; font-size: 12px; font-variant-numeric: tabular-nums; }
 .pop-go { grid-column: 2; grid-row: 1 / span 2; padding: 8px 14px; border: 0; border-radius: 6px; background: #F2D16B; color: #2A1D12; font: 600 13px system-ui, sans-serif; cursor: pointer; }
+.pop-go[hidden] { display: none; }
 .pop-go:disabled { background: #6B5D50; color: #BFAF9C; cursor: default; }
 .pop-go:focus-visible { outline: 2px solid #FFF; outline-offset: 2px; }
 .seat:focus-visible { outline: 2px solid #F2D16B; outline-offset: 2px; }
@@ -24,8 +31,10 @@ html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; o
 
 <div id="world"></div>
 <div class="pop" id="pop" hidden><div class="pop-name" id="pop-name"></div><div class="pop-info" id="pop-info"></div><button class="pop-go" id="pop-go" type="button">Sit down</button></div>
-<div class="hint">Tap a tile to walk there. Tap a table or chair to sit. Tap a person to show their pie, tap again to add a piece.</div>
-<button class="seat" id="seat" type="button">You are player 1 · switch</button>
+<div class="labels" id="labels"></div>
+<div class="toast" id="toast" role="status" hidden></div>
+<div class="hint">Tap a tile to walk there. Tap a person to talk, a table or chair to sit.</div>
+<div class="dev-bar"><button class="seat" id="types" type="button">Show types</button><button class="seat" id="seat" type="button">You are player 1 · switch</button></div>
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.min.js';
 // ===== 3D camera and its controls =====
@@ -956,7 +965,8 @@ const Pies = (THREE, scene, people, opts = {}) => {
   const busy = () => pies.some((p) => p.holder.visible && (p.popDir || p.chips.length || p.finale >= 0 || ![p.s, p.tx, p.ty].every(resting)
     || p.pieces.some((pc) => pc.state === 'fly' || pc.state === 'out' || pc.bump || pc.flash > 0 || (pc.state === 'seated' && !(resting(pc.z) && resting(pc.sq))))));
   const targets = () => pies.filter((p) => p.holder.visible).map((p) => p.holder);
-  return { show, hide, add, clear, update, busy, targets, list: pies };
+  const state = (id) => ({ filled: pies[id].filled, n: pies[id].n, shown: pies[id].shown });
+  return { show, hide, add, clear, update, busy, targets, state, list: pies };
 };
 
 // ===== Walking: the players move their figures tile to tile, and see their own figure and plan marked =====
@@ -1066,7 +1076,7 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
     blocked.delete(key(from.col, from.row));
     const tiles = path(from, to, blocked);
     if (!tiles) return false;
-    release(who);
+    release(who); who.faceAt = null;
     if (seat) { seat.by = id; who.seat = seat; }
     // from where the figure is now, through the middles of the tiles after the one it's on, pulled straight: a corner
     // is kept only where a straight line to a later tile would brush someone (A* zigzags between equally short routes)
@@ -1118,6 +1128,7 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   }
 
   // ---------- walking ----------
+  const faceYaw = (w) => Math.atan2(-(w.faceAt[0] - w.group.position.x), -(w.faceAt[1] - w.group.position.z));
   const turnTo = (g, yaw, dt) => { let d = yaw - g.rotation.y; d = Math.atan2(Math.sin(d), Math.cos(d)); g.rotation.y += d * Math.min(1, TURN * dt); };
   function update(dt) {
     for (const [id, w] of walks) {
@@ -1133,6 +1144,7 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
     for (const who of people.list) {
       const g = who.group, want = who.seated && who.seat.pose === 'sit' ? 1 : 0;
       if (who.seated && !walks.has(who.id)) turnTo(g, who.seat.yaw, dt);
+      else if (who.faceAt && !walks.has(who.id)) turnTo(g, faceYaw(who), dt);
       if (who.pose !== want) who.pose = want > who.pose ? Math.min(1, who.pose + dt / POSE_S) : Math.max(0, who.pose - dt / POSE_S);
       if (who.seated) who.sitY = who.seat.y; // kept while getting up, so it sinks back down from the same height
       const k = who.pose * who.pose * (3 - 2 * who.pose), y = who.sitY || 0;
@@ -1145,58 +1157,371 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
     if (w) drawArrow(w); else { arrow.visible = false; dest.visible = false; }
   }
   function setMe(p) { me = p; const w = walks.get(people.list.find((q) => q.player === me).id); dest.visible = false; if (w) { const who = people.list.find((q) => q.player === me); markDest(who); } }
-  const settling = () => people.list.some((w) => (w.seated && !walks.has(w.id) && Math.abs(Math.atan2(Math.sin(w.seat.yaw - w.group.rotation.y), Math.cos(w.seat.yaw - w.group.rotation.y))) > 0.01)
+  const off = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+  // face(id, x, z): standing still, turn to look at that point (someone you talk to, the middle of a group)
+  function face(id, x, z) { const who = people.list[id]; who.faceAt = [x, z]; }
+  const settling = () => people.list.some((w) => (w.seated && !walks.has(w.id) && off(w.seat.yaw, w.group.rotation.y) > 0.01)
+    || (!w.seated && w.faceAt && !walks.has(w.id) && off(faceYaw(w), w.group.rotation.y) > 0.01)
     || w.pose !== (w.seated && w.seat.pose === 'sit' ? 1 : 0));
-  return { moveTo, sit, leave, setMe, update, busy: () => walks.size > 0 || settling(), walking: (id) => walks.has(id), me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
+  return { moveTo, sit, leave, face, setMe, update, busy: () => walks.size > 0 || settling(), walking: (id) => walks.has(id), me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
 };
 
-// ===== The NPCs' own minds: now and then they sit down, get up, or wander =====
-// Brain(people, furniture, moves, match, board) lets every NPC (not the players' figures) act on its own: each waits a while,
-// then picks something to do. Standing, it may take a free seat or a place at a table (the nearer the likelier), or
-// stroll a few tiles; seated, it mostly stays a good while, then gets up and wanders off. Random numbers come from
-// the match, so a networked match plays the same for both. update(dt) every frame (cheap).
-const Brain = (people, furniture, moves, match, board) => {
-  const rr = match.rng;
-  const npcs = people.list.filter((p) => p.player === null);
-  const wait = new Map(npcs.map((p) => [p.id, 2 + rr() * 12])); // the first moves come soon after the party starts
-  const randomTile = (from, reach) => {
+// ===== The party's social life: who talks to whom, in what mood, and what they share =====
+// Social(people, furniture, moves, pies, match, board, hooks) runs every NPC's choices and every conversation.
+//
+// NPC types (dealt from the match seed, 5 of each among the 20 NPCs; players have no type: they act as they like):
+//   type 1, social 0: never seeks a conversation; the first time anyone asks in a match it declines, then won't talk
+//                     for 15 s; after that it accepts. In a conversation it never adds anything.
+//   type 2, social 1: never seeks a conversation; always accepts.
+//   type 3, social 2: sometimes seeks a conversation; always accepts.
+//   type 4, social 3: constantly seeks a conversation; always accepts. Inviting: it brings others into its conversation
+//                     or to the table or bar where it sits. While only listening to a group it sometimes interrupts,
+//                     but never pulls anyone away.
+// Conversations:
+//   standing: 2 people (a 1v1) or 3 talking, standing on neighbouring tiles facing their middle. Anyone who joins a
+//             group of 3 talking only listens. Interacting with a talker in a group you only listen to may make each
+//             of them peeved or irritated; doing it again pulls that one aside for a 1v1 (rolling again), unless they
+//             are irritated. Peeved (10 s): acts normally but is reluctant (adds at half speed) and can't be peeved
+//             again, only irritated (likelier). Irritated (10 s): can't be pulled away. The higher the social level,
+//             the likelier both.
+//   at furniture: everyone seated at the same table or bar (or standing at the same standing table) talks together.
+// Sharing: every talker who adds to the conversation fills their own pie (shown over them while they're in one), one
+// piece every SHARE_S seconds, half as fast while reluctant. Type 1 and listeners don't fill theirs.
+//
+// hooks: me() -> my figure's id; askPlayer(fromId, kind ('talk' or 'invite'), answer(ok)) when an NPC asks you;
+// toast(text) for what happened when you acted; onChange() when anything visible changed.
+// Calls: update(dt) every frame; options(meId, targetId) -> { info, label, disabled, act } for the popup over a person;
+// playerMoved(id) when a player walks off on their own; debug(id) -> a line for the dev labels.
+const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
+  const SHARE_S = 5;        // a talker fills a pie piece this often
+  const MOOD_S = 10;        // peeved, irritated and reluctant last this long
+  const SHY_COOLDOWN = 15;  // a type 1 won't talk for this long after its first refusal
+  const ASK_S = 8;          // a player who doesn't answer an NPC within this long has said no
+  const rr = match.rng, L = people.list, key = (c, r) => c + ',' + r;
+  const npcs = L.filter((p) => p.player === null);
+  const deck = npcs.map((_, i) => 1 + (i % 4));
+  for (let i = deck.length - 1; i > 0; i--) { const j = Math.floor(rr() * (i + 1)); [deck[i], deck[j]] = [deck[j], deck[i]]; }
+  const S = L.map((p) => ({ id: p.id, type: p.player === null ? deck[npcs.indexOf(p)] : null, convo: null, role: null, share: 0,
+    peeved: 0, irritated: 0, reluctant: 0, declinedOnce: false, cooldown: 0, intent: null, stay: 0,
+    wait: p.player === null ? 1 + rr() * 8 : 0, nudges: new Map() }));
+  const convos = new Map(); let nextId = 1;
+  const changed = () => hooks.onChange && hooks.onChange();
+
+  // ---------- where people are ----------
+  const pos = (id) => L[id].group.position;
+  const dist = (a, b) => Math.hypot(pos(a).x - pos(b).x, pos(a).z - pos(b).z);
+  const inside = (c, r) => c >= 0 && r >= 0 && c < board.cols && r < board.rows;
+  const occupied = (c, r, self) => L.some((p) => p.id !== self && p.col === c && p.row === r);
+  const walkable = (c, r, self) => inside(c, r) && !furniture.blocked.has(key(c, r)) && !furniture.seatTiles.has(key(c, r)) && !occupied(c, r, self);
+  const touching = (a, b) => Math.max(Math.abs(L[a].col - L[b].col), Math.abs(L[a].row - L[b].row)) === 1;
+  const atRest = (id) => !moves.walking(id);
+  const isFree = (id) => !S[id].convo && !L[id].seat && !S[id].intent && atRest(id);
+  const pick = (items, weight) => { const w = items.map(weight), sum = w.reduce((a, b) => a + b, 0); if (!(sum > 0)) return null; let x = rr() * sum; for (let i = 0; i < items.length; i++) if ((x -= w[i]) <= 0) return items[i]; return items[items.length - 1]; };
+  // a free tile next to the given people (best next to all of them), nearest to self; self's own tile counts
+  function spotNear(ids, self) {
+    const cand = new Set();
+    for (const id of ids) for (let dc = -1; dc <= 1; dc++) for (let dr = -1; dr <= 1; dr++) if (dc || dr) cand.add(key(L[id].col + dc, L[id].row + dr));
+    let best = null, bs = Infinity;
+    for (const k of cand) {
+      const [c, r] = k.split(',').map(Number);
+      if (!walkable(c, r, self) || ids.some((id) => L[id].col === c && L[id].row === r)) continue;
+      const near = ids.filter((id) => Math.max(Math.abs(L[id].col - c), Math.abs(L[id].row - r)) === 1).length;
+      const [x, z] = people.centre(c, r), s = -near * 8 + Math.hypot(x - pos(self).x, z - pos(self).z) / 6;
+      if (s < bs) { bs = s; best = { col: c, row: r }; }
+    }
+    return best;
+  }
+  const goTo = (id, t) => (L[id].col === t.col && L[id].row === t.row && atRest(id)) || moves.moveTo(id, t.col, t.row);
+  function wander(id, reach) {
     for (let k = 0; k < 20; k++) {
-      const c = from.col + Math.round((rr() * 2 - 1) * reach), r = from.row + Math.round((rr() * 2 - 1) * reach);
-      const key = c + ',' + r;
-      if (c < 0 || r < 0 || c >= board.cols || r >= board.rows || furniture.blocked.has(key) || furniture.seatTiles.has(key)) continue;
-      if (people.list.some((q) => q.col === c && q.row === r)) continue;
-      return { col: c, row: r };
+      const c = L[id].col + Math.round((rr() * 2 - 1) * reach), r = L[id].row + Math.round((rr() * 2 - 1) * reach);
+      if ((c !== L[id].col || r !== L[id].row) && walkable(c, r, id)) return moves.moveTo(id, c, r);
     }
-    return null;
+    return false;
+  }
+
+  // ---------- conversations ----------
+  const stayFor = (id, kind) => {
+    const t = S[id].type; if (t == null) return Infinity; // players stay as long as they like
+    const [a, b] = { 1: [8, 18], 2: [15, 35], 3: [20, 45], 4: [25, 55] }[t];
+    return (a + rr() * (b - a)) * (kind === 'poi' ? 1.15 : 1);
   };
-  function pickSeat(p) {
-    const free = furniture.seats.filter((s) => s.by == null);
-    if (!free.length) return null;
-    // weighted by nearness: a seat across the room is still possible, just less likely
-    const pos = p.group.position, w = free.map((s) => 1 / (8 + Math.hypot(s.x - pos.x, s.z - pos.z)));
-    let x = rr() * w.reduce((a, b) => a + b, 0);
-    for (let i = 0; i < free.length; i++) if ((x -= w[i]) <= 0) return free[i];
-    return free[free.length - 1];
+  function enter(cv, id, role) {
+    const s = S[id];
+    if (s.convo && s.convo !== cv.id) leave(id);
+    (role === 'talk' ? cv.talkers : cv.listeners).add(id);
+    s.convo = cv.id; s.role = role; s.stay = stayFor(id, cv.kind); s.nudges.clear();
+    pies.show(id);
   }
-  function act(p) {
-    if (moves.walking(p.id)) return 3;
-    if (p.seated) {
-      if (rr() < 0.55) return 10 + rr() * 20;                       // stay a while longer
-      const t = randomTile(p, 4); if (t) moves.moveTo(p.id, t.col, t.row);
-      return 8 + rr() * 12;
+  function faceAll(cv) {
+    if (cv.kind !== 'stand') return;
+    const ts = [...cv.talkers], cx = ts.reduce((a, id) => a + people.centre(L[id].col, L[id].row)[0], 0) / ts.length, cz = ts.reduce((a, id) => a + people.centre(L[id].col, L[id].row)[1], 0) / ts.length;
+    for (const id of [...cv.talkers, ...cv.listeners]) {
+      if (cv.talkers.size === 2 && cv.talkers.has(id)) { const o = ts.find((q) => q !== id); moves.face(id, pos(o).x, pos(o).z); } // a 1v1 looks at each other
+      else moves.face(id, cx, cz);
     }
-    const roll = rr();
-    if (roll < 0.45) { const s = pickSeat(p); if (s && moves.sit(p.id, s)) return 15 + rr() * 25; }
-    if (roll < 0.8) { const t = randomTile(p, 3); if (t) moves.moveTo(p.id, t.col, t.row); return 6 + rr() * 10; }
-    return 4 + rr() * 8;                                              // stand and chat where they are
   }
+  function startConvo(a, b) {
+    for (const id of [a, b]) if (S[id].convo) leave(id);
+    const cv = { id: nextId++, kind: 'stand', talkers: new Set(), listeners: new Set() };
+    convos.set(cv.id, cv); enter(cv, a, 'talk'); enter(cv, b, 'talk'); faceAll(cv); changed();
+    return cv;
+  }
+  function join(cv, id) {
+    if (cv.kind !== 'stand') return;
+    enter(cv, id, cv.talkers.size < 3 ? 'talk' : 'listen'); faceAll(cv); changed();
+  }
+  function leave(id) {
+    const s = S[id], cv = convos.get(s.convo);
+    s.convo = null; s.role = null; s.nudges.clear(); L[id].faceAt = null;
+    pies.hide(id);
+    if (!cv) return;
+    cv.talkers.delete(id); cv.listeners.delete(id);
+    // a group that loses a talker: a listener steps in
+    while (cv.kind === 'stand' && cv.talkers.size < 3 && cv.listeners.size) { const q = cv.listeners.values().next().value; cv.listeners.delete(q); cv.talkers.add(q); S[q].role = 'talk'; }
+    if (cv.talkers.size < 2) { // too few left to talk: it's over
+      convos.delete(cv.id);
+      for (const q of [...cv.talkers, ...cv.listeners]) { S[q].convo = null; S[q].role = null; S[q].nudges.clear(); L[q].faceAt = null; pies.hide(q); }
+    } else faceAll(cv);
+    changed();
+  }
+  // everyone seated at the same piece of furniture talks together
+  function syncFurniture() {
+    for (const f of furniture.list) {
+      const here = L.filter((p) => p.seated && p.seat && p.seat.furniture === f.id && atRest(p.id)).map((p) => p.id);
+      let cv = [...convos.values()].find((c) => c.kind === 'poi' && c.furniture === f.id);
+      if (here.length >= 2) {
+        if (!cv) { cv = { id: nextId++, kind: 'poi', furniture: f.id, talkers: new Set(), listeners: new Set() }; convos.set(cv.id, cv); }
+        for (const id of here) if (!cv.talkers.has(id)) { enter(cv, id, 'talk'); changed(); }
+        for (const id of [...cv.talkers]) if (!here.includes(id)) leave(id);
+      } else if (cv) for (const id of [...cv.talkers]) leave(id);
+    }
+  }
+
+  // ---------- moods ----------
+  // one talker's roll when someone barges in: irritated (slight chance) or peeved (likelier); the more social, the likelier
+  function roll(id) {
+    const t = S[id]; if (t.type == null || t.irritated > 0) return null;
+    const lv = t.type - 1, pI = t.peeved > 0 ? 0.15 + 0.1 * lv : 0.04 + 0.04 * lv, pP = 0.2 + 0.15 * lv, r = rr();
+    if (r < pI) { t.irritated = MOOD_S; return 'irritated'; }
+    if (t.peeved <= 0 && r < pI + pP) { t.peeved = MOOD_S; t.reluctant = MOOD_S; return 'peeved'; }
+    return null;
+  }
+  // by, only listening to target's group, interacts with target: the whole group may take it badly
+  function barge(by, target) {
+    const cv = convos.get(S[target].convo); if (!cv) return;
+    for (const id of cv.talkers) if (id !== by) roll(id);
+    S[by].nudges.set(target, (S[by].nudges.get(target) || 0) + 1);
+    changed();
+  }
+
+  // ---------- asking ----------
+  // from asks to (to talk, or an invitation): done(ok) now (an NPC answers at once) or later (a player decides)
+  const pending = []; // { to, done, t }
+  function ask(from, to, kind, done) {
+    if (L[to].player !== null) {
+      const p = { to, done, t: ASK_S, over: false };
+      const answer = (ok) => { if (p.over) return; p.over = true; pending.splice(pending.indexOf(p), 1); done(!!ok); };
+      pending.push(p);
+      if (hooks.askPlayer && hooks.me && hooks.me() === to) hooks.askPlayer(from, kind, answer); // the other player answers on their own screen
+      return;
+    }
+    const t = S[to];
+    if (t.type === 1) {
+      if (!t.declinedOnce) { t.declinedOnce = true; t.cooldown = SHY_COOLDOWN; return done(false, 'declined'); }
+      if (t.cooldown > 0) return done(false, 'not now');
+    }
+    done(true);
+  }
+
+  // ---------- intents: something a figure is on its way to do ----------
+  //   talk: walk up to target and ask; join: walk up to a standing conversation and join; sit: take a free seat at a
+  //   piece of furniture; pulled: walk up to the one who pulled you aside, for a 1v1
+  function intend(id, it) { S[id].intent = { ...it, t: 0, last: null }; }
+  const done = (id) => { S[id].intent = null; };
+  function stepIntent(id, dt) {
+    const it = S[id].intent; if (!it) return;
+    it.t += dt;
+    if (it.asking) return;
+    if (it.t > (L[id].player === null ? 30 : 60)) return done(id); // gave up
+    if (!atRest(id)) return;
+    if (it.kind === 'talk') {
+      const tg = it.target, cv = convos.get(S[tg].convo);
+      if (cv && cv.kind === 'stand') { S[id].intent = { kind: 'join', convo: cv.id, t: it.t, last: null }; return; }
+      if (L[tg].seated) { S[id].intent = { kind: 'sit', furniture: L[tg].seat.furniture, t: it.t }; return; }
+      if (S[tg].intent && L[tg].player === null) return; // busy: wait a moment
+      if (touching(id, tg) && atRest(tg)) {
+        it.asking = true;
+        return ask(id, tg, 'talk', (ok, why) => {
+          done(id);
+          if (ok && !S[tg].convo && !L[tg].seat && touching(id, tg)) startConvo(id, tg);
+          else if (L[id].player !== null && hooks.me && hooks.me() === id) hooks.toast(why === 'not now' ? 'They don’t want to talk right now' : 'They’d rather not talk');
+        });
+      }
+      const k = key(L[tg].col, L[tg].row);
+      if (it.last === k) return; // already on the way to where they are
+      it.last = k;
+      const spot = spotNear([tg], id);
+      if (!spot || !goTo(id, spot)) done(id);
+    } else if (it.kind === 'join' || it.kind === 'pulled') {
+      const cv = it.kind === 'join' ? convos.get(it.convo) : null;
+      const ids = cv ? [...cv.talkers] : [it.by];
+      if (!ids.length || (cv == null && it.kind === 'join')) return done(id);
+      if (ids.some((q) => touching(id, q))) {
+        done(id);
+        if (it.kind === 'join') join(cv, id);
+        else if (!S[it.by].convo) startConvo(it.by, id);
+        return;
+      }
+      const k = ids.map((q) => key(L[q].col, L[q].row)).join('|');
+      if (it.last === k) return;
+      it.last = k;
+      const spot = spotNear(ids, id);
+      if (!spot || !goTo(id, spot)) done(id);
+    } else if (it.kind === 'sit') {
+      const f = furniture.list[it.furniture], here = pos(id);
+      const free = furniture.free(f).sort((a, b) => Math.hypot(a.x - here.x, a.z - here.z) - Math.hypot(b.x - here.x, b.z - here.z));
+      done(id);
+      if (S[id].convo) leave(id);
+      if (!free.some((s) => moves.sit(id, s)) && hooks.me && hooks.me() === id) hooks.toast('No free seat there');
+    }
+  }
+
+  // ---------- the NPCs' choices ----------
+  // how strongly each type is drawn to each kind of place
+  const PLACE = { 1: { chair: 3, bar: 0.6, dining: 0.5, mingle: 0.3 }, 2: { chair: 1, bar: 1.4, dining: 1, mingle: 0.8 },
+    3: { chair: 0.3, bar: 1.2, dining: 1, mingle: 1.4 }, 4: { chair: 0.2, bar: 1.3, dining: 1.1, mingle: 1.5 } };
+  function goSit(id) {
+    const t = S[id].type, here = pos(id);
+    const seat = pick(furniture.seats.filter((s) => s.by == null), (s) => {
+      const f = furniture.list[s.furniture], company = f.seats.filter((q) => q.by != null).length;
+      const social = t >= 3 ? 1 + company * 0.6 : t === 1 ? 1 / (1 + company) : 1; // the sociable go where others are, the shy where they aren't
+      return PLACE[t][f.kind] * social / (10 + Math.hypot(s.x - here.x, s.z - here.z));
+    });
+    return !!seat && moves.sit(id, seat);
+  }
+  // someone, a group or a table to talk to, nearer and livelier likelier
+  function seekTalk(id) {
+    const t = S[id].type, opts = [];
+    for (const p of L) {
+      if (p.id === id) continue;
+      const d = dist(id, p.id), cv = convos.get(S[p.id].convo);
+      if (cv && cv.kind === 'stand') opts.push({ w: (cv.talkers.size < 3 ? 1.3 : t === 4 ? 0.5 : 0.2) / (6 + d), it: { kind: 'join', convo: cv.id } });
+      else if (p.seated) { if (furniture.free(furniture.list[p.seat.furniture]).length) opts.push({ w: 0.8 / (6 + d), it: { kind: 'sit', furniture: p.seat.furniture } }); }
+      else if (isFree(p.id)) opts.push({ w: 1 / (6 + d), it: { kind: 'talk', target: p.id } });
+    }
+    const o = pick(opts, (x) => x.w); if (!o) return false;
+    intend(id, o.it); return true;
+  }
+  // a type 4 brings someone nearby into its conversation, or to its seat's table
+  function invite(id) {
+    const cv = convos.get(S[id].convo), f = L[id].seated ? furniture.list[L[id].seat.furniture] : null;
+    if (cv && cv.kind === 'stand' && cv.talkers.size >= 3) return;
+    if (f && !furniture.free(f).length) return;
+    if (!cv && !f) return;
+    const near = L.filter((p) => p.id !== id && isFree(p.id) && dist(id, p.id) < 30);
+    const tg = pick(near, (p) => 1 / (6 + dist(id, p.id))); if (!tg) return;
+    ask(id, tg.id, 'invite', (ok) => {
+      if (!ok) return;
+      if (cv && convos.has(cv.id) && cv.kind === 'stand') intend(tg.id, { kind: 'join', convo: cv.id });
+      else if (f) intend(tg.id, { kind: 'sit', furniture: f.id });
+    });
+  }
+  function leaveAndGo(id) {
+    if (S[id].convo) leave(id);
+    if (L[id].seat) moves.leave(id); else wander(id, 2);
+  }
+  // someone is on their way to talk to id (or to pull it aside): it waits for them
+  const awaited = (id) => S.some((q) => q.intent && (q.intent.target === id || (q.intent.kind === 'pulled' && q.intent.by === id)));
+  function decide(id) {
+    const s = S[id], who = L[id];
+    if (s.intent || !atRest(id)) return 1.5;
+    if (!s.convo && !who.seat && awaited(id)) return 1.5;
+    const cv = convos.get(s.convo);
+    if (cv) {
+      if (s.stay <= 0) { leaveAndGo(id); return 4 + rr() * 8; }
+      if (s.type === 4) {
+        if (s.role === 'listen' && rr() < 0.35) { const ts = [...cv.talkers]; barge(id, ts[Math.floor(rr() * ts.length)]); return 10 + rr() * 15; }
+        if (rr() < 0.5) invite(id);
+      }
+      return 4 + rr() * 8;
+    }
+    if (who.seated) { // alone at a chair, or the only one at a table
+      if (s.type === 4 && rr() < 0.7) { invite(id); return 5 + rr() * 6; }
+      if (rr() < (s.type === 1 ? 0.25 : 0.6)) { leaveAndGo(id); return 4 + rr() * 8; }
+      return 6 + rr() * 10;
+    }
+    if (rr() < [0, 0, 0, 0.35, 0.85][s.type] && seekTalk(id)) return 6 + rr() * 6;
+    const r = rr();
+    if (r < [0, 0.4, 0.3, 0.2, 0.15][s.type] && goSit(id)) return 10 + rr() * 15;
+    if (r < 0.8 && wander(id, 1 + Math.floor(rr() * 3))) return 4 + rr() * 9;
+    return 3 + rr() * 9; // stand where they are a while
+  }
+
+  // ---------- the player's side: what tapping a person offers ----------
+  function options(me, target) {
+    if (me === target) return { info: 'You', label: null };
+    const tm = S[target], mm = S[me], cvT = convos.get(tm.convo), cvM = convos.get(mm.convo);
+    if (cvT && cvT === cvM) {
+      if (mm.role === 'listen' && cvT.talkers.has(target)) {
+        return (mm.nudges.get(target) || 0) === 0
+          ? { info: 'Talking in a group of 3 · you’re listening', label: 'Speak to them', act: () => { barge(me, target); hooks.toast && hooks.toast('They’re busy talking. Speak to them again to pull them aside.'); } }
+          : { info: 'Talking in a group of 3 · you’re listening', label: 'Pull aside', act: () => pullAside(me, target) };
+      }
+      return { info: cvT.kind === 'poi' ? 'At your table' : 'Talking with you', label: 'Leave conversation', act: () => { leave(me); if (L[me].seat) moves.leave(me); } };
+    }
+    if (L[target].seat) {
+      const f = furniture.list[L[target].seat.furniture], free = furniture.free(f).length;
+      return { info: L[target].seated ? `At the ${f.name.toLowerCase()}` : `On the way to the ${f.name.toLowerCase()}`, label: f.kind === 'chair' ? null : 'Join them', disabled: !free, act: () => playerIntent(me, { kind: 'sit', furniture: f.id }) };
+    }
+    if (cvT && cvT.kind === 'stand') {
+      const full = cvT.talkers.size >= 3;
+      return { info: full ? 'Talking in a group of 3' : 'In a conversation', label: full ? 'Listen in' : 'Join conversation', act: () => playerIntent(me, { kind: 'join', convo: cvT.id }) };
+    }
+    return { info: atRest(target) ? 'Standing' : 'Walking', label: 'Talk', act: () => playerIntent(me, { kind: 'talk', target }) };
+  }
+  function playerIntent(me, it) {
+    if (S[me].convo && !(it.kind === 'join' && it.convo === S[me].convo)) leave(me);
+    intend(me, it); changed();
+  }
+  function pullAside(me, target) {
+    barge(me, target);
+    if (S[target].irritated > 0) { hooks.toast && hooks.toast('They won’t leave the group right now'); return; }
+    leave(target); leave(me);
+    intend(target, { kind: 'pulled', by: me });
+  }
+  // a player walked off on their own: out of any conversation, and nothing planned
+  function playerMoved(id) { if (S[id].convo) leave(id); S[id].intent = null; }
+
+  // ---------- every frame ----------
   function update(dt) {
-    for (const p of npcs) {
-      const t = wait.get(p.id) - dt;
-      wait.set(p.id, t > 0 ? t : act(p));
+    for (const s of S) {
+      for (const k of ['peeved', 'irritated', 'reluctant', 'cooldown']) if (s[k] > 0) s[k] = Math.max(0, s[k] - dt);
+      if (s.convo) s.stay -= dt;
+    }
+    for (let i = pending.length - 1; i >= 0; i--) { const p = pending[i]; p.t -= dt; if (p.t <= 0 && !p.over) { p.over = true; pending.splice(i, 1); p.done(false); } }
+    syncFurniture();
+    for (const s of S) stepIntent(s.id, dt);
+    for (const s of S) {
+      if (s.type == null) continue;
+      s.wait -= dt;
+      if (s.wait <= 0) s.wait = decide(s.id);
+    }
+    // sharing: talkers fill their pies
+    for (const cv of convos.values()) for (const id of cv.talkers) {
+      const s = S[id]; if (s.type === 1) continue;
+      s.share += dt / SHARE_S * (s.reluctant > 0 ? 0.5 : 1);
+      if (s.share >= 1) { s.share -= 1; const p = pies.state(id); if (p.filled < p.n) pies.add(id); }
     }
   }
-  return { update };
+  function debug(id) {
+    const s = S[id], cv = convos.get(s.convo);
+    const who = s.type == null ? 'P' + (L[id].player + 1) : 'T' + s.type;
+    const doing = cv ? (cv.kind === 'poi' ? 'table' : s.role === 'listen' ? 'listen' : cv.talkers.size === 2 ? '1v1' : 'group') : L[id].seated ? 'seat' : s.intent ? s.intent.kind : '';
+    const mood = [s.peeved > 0 && 'peeved ' + Math.ceil(s.peeved), s.irritated > 0 && 'irritated ' + Math.ceil(s.irritated), s.cooldown > 0 && 'shy ' + Math.ceil(s.cooldown)].filter(Boolean).join(' · ');
+    return [who, doing, mood].filter(Boolean).join(' · ');
+  }
+  return { update, options, playerMoved, debug, convos, state: S, intend, startConvo, leave };
 };
 
 // ===== The world: the room (floor and walls), the characters and the camera =====
@@ -1250,9 +1575,8 @@ const World = (THREE, el, opts = {}) => {
   const people = Characters(THREE, scene, BOARD, match, new Set([...furniture.blocked, ...furniture.seatTiles]));
   const pies = Pies(THREE, scene, people, { onEvent: (type, detail) => opts.onPie && opts.onPie(type, detail) });
   const moves = Movement(THREE, scene, BOARD, people, furniture, { me: opts.me || 0 });
-  const brain = Brain(people, furniture, moves, match, BOARD);
 
-  // ---------- taps: on a person (or their pie) shows the pie and the next taps add pieces; on a tile walks you there ----------
+  // ---------- taps: on a person or a piece of furniture opens a popup over it; on a tile walks you there ----------
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
   function personAt(cx, cy) {
     const r = renderer.domElement.getBoundingClientRect();
@@ -1266,28 +1590,61 @@ const World = (THREE, el, opts = {}) => {
     return hit ? hit.object.userData.furniture : null;
   }
 
-  // ---------- the popup over a piece of furniture: "Sit down" (or "Join table"), or "Get up" where you are ----------
-  const pop = opts.popup; // { el, name, info, go } (elements, from the page)
-  let popFor = null;
+  // ---------- the popup: over a piece of furniture (sit down, get up), over a person (talk, join, listen, speak up,
+  // pull aside, leave), or over someone asking you (accept) ----------
+  const ui = opts.ui || {}, pop = ui.popup; // { el, name, info, go } (elements, from the page)
+  let popFor = null; // { kind: 'furniture', f } | { kind: 'person', id } | { kind: 'ask', from, ask, answer }
+  const meId = () => moves.mine().id;
   const mySeatAt = (f) => { const me = moves.mine(); return me.seat && me.seat.furniture === f.id ? me.seat : null; };
-  function openPop(id) {
+  // a white ring under the person the popup is about (gold is for you)
+  const pick = new THREE.Mesh(new THREE.RingGeometry(people.radius * 1.3, people.radius * 1.3 + 0.28, 48),
+    new THREE.MeshBasicMaterial({ color: '#FFFFFF', transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+  pick.rotation.x = -Math.PI / 2; pick.position.y = 0.055; pick.renderOrder = 2; pick.visible = false; scene.add(pick);
+  function openPop(p) {
     if (!pop) return;
-    popFor = furniture.list[id]; refreshPop(); furniture.highlight(id);
+    if (popFor && popFor.kind === 'ask' && p.kind !== 'ask') popFor.answer(false);
+    popFor = p; refreshPop();
+    furniture.highlight(p.kind === 'furniture' ? p.f.id : null);
     pop.el.hidden = false; placePop(); dirty = true;
   }
-  function refreshPop() { // its text, again as seats come and go
-    const f = popFor, mine = mySeatAt(f), free = furniture.free(f).length, n = f.seats.length;
-    pop.name.textContent = f.name;
-    pop.info.textContent = n === 1 ? (mine ? 'Your seat' : free ? 'Free' : 'Taken') : `${free} of ${n} ${f.kind === 'mingle' ? 'places' : 'seats'} free`;
-    pop.go.textContent = mine ? (mine.pose === 'sit' ? 'Get up' : 'Leave table') : f.verb;
-    pop.go.disabled = !mine && !free;
+  function refreshPop() { // its text, again as things change
+    const p = popFor;
+    if (p.kind === 'furniture') {
+      const f = p.f, mine = mySeatAt(f), free = furniture.free(f).length, n = f.seats.length;
+      pop.name.textContent = f.name;
+      pop.info.textContent = n === 1 ? (mine ? 'Your seat' : free ? 'Free' : 'Taken') : `${free} of ${n} ${f.kind === 'mingle' ? 'places' : 'seats'} free`;
+      pop.go.textContent = mine ? (mine.pose === 'sit' ? 'Get up' : 'Leave table') : f.verb;
+      pop.go.disabled = !mine && !free; pop.go.hidden = false;
+    } else if (p.kind === 'person') {
+      const o = social.options(meId(), p.id);
+      pop.name.textContent = p.id === meId() ? 'You' : 'Guest';
+      pop.info.textContent = o.info; p.act = o.act;
+      pop.go.hidden = !o.label; pop.go.textContent = o.label || ''; pop.go.disabled = !!o.disabled;
+    } else {
+      pop.name.textContent = 'Guest';
+      pop.info.textContent = p.ask === 'invite' ? 'Invites you to join them' : 'Wants to talk to you';
+      pop.go.hidden = false; pop.go.textContent = 'Accept'; pop.go.disabled = false;
+    }
   }
-  function closePop() { if (pop) pop.el.hidden = true; if (popFor) dirty = true; popFor = null; furniture.highlight(null); }
+  function closePop() {
+    if (pop) pop.el.hidden = true;
+    if (popFor && popFor.kind === 'ask') popFor.answer(false);
+    if (popFor) dirty = true;
+    popFor = null; furniture.highlight(null);
+  }
   const v3 = new THREE.Vector3();
   function placePop() {
+    pick.visible = !!popFor && popFor.kind !== 'furniture';
     if (!popFor || !pop) return;
-    const [x, z] = furniture.middle(popFor), r = renderer.domElement.getBoundingClientRect();
-    v3.set(x, popFor.top + 1.5, z).project(camera);
+    let x, y, z;
+    if (popFor.kind === 'furniture') { [x, z] = furniture.middle(popFor.f); y = popFor.f.top + 1.5; }
+    else {
+      const id = popFor.kind === 'person' ? popFor.id : popFor.from, g = people.list[id].group;
+      x = g.position.x; z = g.position.z; y = people.height + (pies.state(id).shown ? 6.2 : 1.2);
+      pick.position.x = x; pick.position.z = z;
+    }
+    const r = renderer.domElement.getBoundingClientRect();
+    v3.set(x, y, z).project(camera);
     if (v3.z > 1) { pop.el.style.visibility = 'hidden'; return; }
     pop.el.style.visibility = '';
     const w = pop.el.offsetWidth, h = pop.el.offsetHeight;
@@ -1295,33 +1652,60 @@ const World = (THREE, el, opts = {}) => {
     pop.el.style.transform = `translate(${px}px, ${py}px)`;
   }
   if (pop) pop.go.addEventListener('click', () => {
-    const f = popFor; if (!f) return;
+    const p = popFor; if (!p) return;
     const me = moves.mine();
-    if (mySeatAt(f)) moves.leave(me.id);
-    else {
-      const pos = me.group.position, free = furniture.free(f).sort((a, b) => Math.hypot(a.x - pos.x, a.z - pos.z) - Math.hypot(b.x - pos.x, b.z - pos.z));
-      for (const s of free) if (moves.sit(me.id, s)) break;
-    }
+    if (p.kind === 'furniture') {
+      social.playerMoved(me.id);
+      if (mySeatAt(p.f)) moves.leave(me.id);
+      else {
+        const pos = me.group.position, free = furniture.free(p.f).sort((a, b) => Math.hypot(a.x - pos.x, a.z - pos.z) - Math.hypot(b.x - pos.x, b.z - pos.z));
+        for (const s of free) if (moves.sit(me.id, s)) break;
+      }
+    } else if (p.kind === 'person') { if (p.act) p.act(); }
+    else { const a = p.answer; popFor = null; a(true); }
     closePop(); dirty = true;
   });
-  let lastPerson = null;
-  const tapPerson = (id) => { lastPerson = id; pies.add(id); dirty = true; };
-  // Space: another piece for the person tapped last
-  const onKey = (e) => { if (e.code === 'Space' && lastPerson != null) { e.preventDefault(); tapPerson(lastPerson); } };
-  window.addEventListener('keydown', onKey);
+  // a short line about what just happened
+  let toastT = 0;
+  function toast(text) { if (!ui.toast) return; ui.toast.textContent = text; ui.toast.hidden = false; toastT = 3; }
 
+  // ---------- the party's social life ----------
+  const social = Social(people, furniture, moves, pies, match, BOARD, {
+    me: meId, toast, onChange: () => { dirty = true; },
+    askPlayer: (from, kind, answer) => {
+      let over = false; const once = (ok) => { if (over) return; over = true; answer(ok); };
+      if (popFor && popFor.kind !== 'ask') return; // busy with something else: no answer is an answer
+      openPop({ kind: 'ask', from, ask: kind, answer: once });
+    },
+  });
+  // what NPCs ask an accepted player: an invitation takes you there
+  // (handled in Social: accepting an invite makes your figure walk to the group or the table)
+
+  // ---------- dev labels: each person's type, what they're doing and their mood ----------
+  let dev = false;
+  const labels = people.list.map(() => { if (!ui.labels) return null; const d = document.createElement('div'); d.className = 'dev'; d.hidden = true; ui.labels.appendChild(d); return d; });
+  function placeLabels() {
+    if (!ui.labels) return;
+    const r = renderer.domElement.getBoundingClientRect();
+    people.list.forEach((p, i) => {
+      const d = labels[i]; d.hidden = !dev; if (!dev) return;
+      v3.set(p.group.position.x, people.height * 0.55, p.group.position.z).project(camera);
+      d.textContent = social.debug(i);
+      d.style.transform = `translate(${(v3.x + 1) / 2 * r.width}px, ${(1 - v3.y) / 2 * r.height}px) translate(-50%, -50%)`;
+    });
+  }
   // ---------- the camera: NML's controls, starting in (and going back to) the tilted view ----------
   const cam = Camera3D(THREE, camera, renderer.domElement, {
     width: BW, depth: BD, home: 1, farTop: room.height, tapsEverywhere: true,
     onInput: () => { dirty = true; },
     onTap: (point, cx, cy) => {
       const id = personAt(cx, cy);
-      if (id != null) { closePop(); tapPerson(id); return; }
+      if (id != null) { openPop({ kind: 'person', id }); return; }
       const f = furnitureAt();
-      if (f != null) { openPop(f); return; }
+      if (f != null) { openPop({ kind: 'furniture', f: furniture.list[f] }); return; }
       closePop();
       const t = point && people.tileOf(point.x, point.z);
-      if (t) { moves.moveTo(moves.mine().id, t.col, t.row); dirty = true; }
+      if (t) { social.playerMoved(meId()); moves.moveTo(meId(), t.col, t.row); dirty = true; }
     },
   });
 
@@ -1338,8 +1722,10 @@ const World = (THREE, el, opts = {}) => {
   let last = performance.now(), frozen = false; // freeze(true) stops drawing (for stepping frames by hand in tests)
   function frame(now) {
     const dt = Math.min(0.1, (now - last) / 1000); last = now;
-    brain.update(dt);
+    social.update(dt);
     if (popFor) refreshPop();
+    if (toastT > 0 && (toastT -= dt) <= 0) ui.toast.hidden = true;
+    if (dev) dirty = true;
     if (!frozen && (dirty || cam.busy() || pies.busy() || moves.busy())) {
       dirty = false;
       cam.update(dt);
@@ -1352,17 +1738,20 @@ const World = (THREE, el, opts = {}) => {
       scene.fog.near = Math.max(90, d * 0.85); scene.fog.far = Math.max(220, d * 2.2);
       if (Math.abs(camera.far - Math.max(600, d * 3)) > 1) { camera.far = Math.max(600, d * 3); camera.updateProjectionMatrix(); }
       renderer.render(scene, camera);
-      placePop();
+      placePop(); placeLabels();
     }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
-  return { scene, camera: cam, cam3: camera, match, people, furniture, pies, moves, closePop, setMe: (p) => { moves.setMe(p); dirty = true; }, renderer, render: () => { dirty = true; }, freeze: (on) => { frozen = on; dirty = true; } };
+  return { scene, camera: cam, cam3: camera, match, people, furniture, pies, moves, social, closePop, showTypes: (on) => { dev = on; dirty = true; if (!on) placeLabels(); }, setMe: (p) => { moves.setMe(p); dirty = true; }, renderer, render: () => { dirty = true; }, freeze: (on) => { frozen = on; dirty = true; } };
 };
 
 const $ = (id) => document.getElementById(id);
-window.agenda = World(THREE, $('world'), { popup: { el: $('pop'), name: $('pop-name'), info: $('pop-info'), go: $('pop-go') } });
+window.agenda = World(THREE, $('world'), { ui: { popup: { el: $('pop'), name: $('pop-name'), info: $('pop-info'), go: $('pop-go') }, toast: $('toast'), labels: $('labels') } });
+// for testing: each person's type, what they're doing and their mood
+let types = false;
+$('types').addEventListener('click', () => { types = !types; agenda.showTypes(types); $('types').textContent = types ? 'Hide types' : 'Show types'; });
 // testing hidden identity on one screen: see the match as either player (each sees only their own circle and path)
 const seat = $('seat');
 seat.addEventListener('click', () => { const p = 1 - agenda.moves.me(); agenda.setMe(p); seat.textContent = `You are player ${p + 1} · switch`; });

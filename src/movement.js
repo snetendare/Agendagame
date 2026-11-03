@@ -105,7 +105,7 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
     blocked.delete(key(from.col, from.row));
     const tiles = path(from, to, blocked);
     if (!tiles) return false;
-    release(who);
+    release(who); who.faceAt = null;
     if (seat) { seat.by = id; who.seat = seat; }
     // from where the figure is now, through the middles of the tiles after the one it's on, pulled straight: a corner
     // is kept only where a straight line to a later tile would brush someone (A* zigzags between equally short routes)
@@ -157,6 +157,7 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   }
 
   // ---------- walking ----------
+  const faceYaw = (w) => Math.atan2(-(w.faceAt[0] - w.group.position.x), -(w.faceAt[1] - w.group.position.z));
   const turnTo = (g, yaw, dt) => { let d = yaw - g.rotation.y; d = Math.atan2(Math.sin(d), Math.cos(d)); g.rotation.y += d * Math.min(1, TURN * dt); };
   function update(dt) {
     for (const [id, w] of walks) {
@@ -172,6 +173,7 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
     for (const who of people.list) {
       const g = who.group, want = who.seated && who.seat.pose === 'sit' ? 1 : 0;
       if (who.seated && !walks.has(who.id)) turnTo(g, who.seat.yaw, dt);
+      else if (who.faceAt && !walks.has(who.id)) turnTo(g, faceYaw(who), dt);
       if (who.pose !== want) who.pose = want > who.pose ? Math.min(1, who.pose + dt / POSE_S) : Math.max(0, who.pose - dt / POSE_S);
       if (who.seated) who.sitY = who.seat.y; // kept while getting up, so it sinks back down from the same height
       const k = who.pose * who.pose * (3 - 2 * who.pose), y = who.sitY || 0;
@@ -184,7 +186,11 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
     if (w) drawArrow(w); else { arrow.visible = false; dest.visible = false; }
   }
   function setMe(p) { me = p; const w = walks.get(people.list.find((q) => q.player === me).id); dest.visible = false; if (w) { const who = people.list.find((q) => q.player === me); markDest(who); } }
-  const settling = () => people.list.some((w) => (w.seated && !walks.has(w.id) && Math.abs(Math.atan2(Math.sin(w.seat.yaw - w.group.rotation.y), Math.cos(w.seat.yaw - w.group.rotation.y))) > 0.01)
+  const off = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+  // face(id, x, z): standing still, turn to look at that point (someone you talk to, the middle of a group)
+  function face(id, x, z) { const who = people.list[id]; who.faceAt = [x, z]; }
+  const settling = () => people.list.some((w) => (w.seated && !walks.has(w.id) && off(w.seat.yaw, w.group.rotation.y) > 0.01)
+    || (!w.seated && w.faceAt && !walks.has(w.id) && off(faceYaw(w), w.group.rotation.y) > 0.01)
     || w.pose !== (w.seated && w.seat.pose === 'sit' ? 1 : 0));
-  return { moveTo, sit, leave, setMe, update, busy: () => walks.size > 0 || settling(), walking: (id) => walks.has(id), me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
+  return { moveTo, sit, leave, face, setMe, update, busy: () => walks.size > 0 || settling(), walking: (id) => walks.has(id), me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
 };

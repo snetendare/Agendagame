@@ -271,5 +271,6 @@ const Pies = (THREE, scene, people, opts = {}) => {
   const busy = () => pies.some((p) => p.holder.visible && (p.popDir || p.chips.length || p.finale >= 0 || ![p.s, p.tx, p.ty].every(resting)
     || p.pieces.some((pc) => pc.state === 'fly' || pc.state === 'out' || pc.bump || pc.flash > 0 || (pc.state === 'seated' && !(resting(pc.z) && resting(pc.sq))))));
   const targets = () => pies.filter((p) => p.holder.visible).map((p) => p.holder);
-  return { show, hide, add, clear, update, busy, targets, list: pies };
+  const state = (id) => ({ filled: pies[id].filled, n: pies[id].n, shown: pies[id].shown });
+  return { show, hide, add, clear, update, busy, targets, state, list: pies };
 };
