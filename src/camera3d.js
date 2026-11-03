@@ -1,7 +1,8 @@
 // ===== 3D camera and its controls =====
 // Taken from No Mans Land (src/camera3d.js) on 2026-11-03. Changes here: opts.home is the view the camera starts in
 // and goes back to (Esc, a tap in a cinematic view); Agenda uses 1, the tilted view. opts.farTop replaces the enemy
-// tower's height in the tilted fit.
+// tower's height in the tilted fit. opts.tapsEverywhere: a tap in a cinematic view goes to opts.onTap too, instead of
+// taking the camera back home.
 // Camera3D(THREE, camera, el, opts) drives a THREE.PerspectiveCamera over the board from pointer, wheel and key input
 // on the element el.
 //
@@ -239,7 +240,7 @@ const Camera3D = (THREE, camera, el, opts) => {
     if (grab === e.pointerId) dropGrab(e.type === 'pointerup' ? groundAt(e.clientX, e.clientY) : null);
     if (tap && tap.id === e.pointerId && e.type === 'pointerup' && performance.now() - tap.t < TAP_MS) {
       swallow = { x: e.clientX, y: e.clientY, t: performance.now() };
-      if (handsOn()) { if (opts.onTap) opts.onTap(groundAt(e.clientX, e.clientY), e.clientX, e.clientY); }
+      if (handsOn() || opts.tapsEverywhere) { if (opts.onTap) opts.onTap(groundAt(e.clientX, e.clientY), e.clientX, e.clientY); }
       else goHome();
     }
     tap = null;

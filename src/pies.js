@@ -1,5 +1,6 @@
 // ===== Pies: a grey plate with outlined slots that a character holds up, filled with wooden pieces =====
-// Pies(THREE, scene, npcs, opts) gives every NPC a pie (hidden until shown). A pie floats above its owner's head and
+// Pies(THREE, scene, people, opts) gives every character (src/characters.js) a pie, hidden until shown. A pie floats
+// above its owner's head (following them as they walk) and
 // always faces the camera. It has n slots (3 to 8), filled clockwise from the top like a clock.
 //
 // Calls:
@@ -8,15 +9,15 @@
 //                        pie, takes the pieces out again)
 //   clear(id)            take all the pieces out
 //   update(dt, camera)   once per drawn frame; busy() is true while anything is still moving
-//   targets()            meshes to raycast against for picking, each with userData.npc
-// Events (for sound later): opts.onEvent(type, detail) and a window event 'agenda:pie' with { type, npc, slot, n },
+//   targets()            meshes to raycast against for picking, each with userData.who (the character's id)
+// Events (for sound later): opts.onEvent(type, detail) and a window event 'agenda:pie' with { type, character, slot, n },
 // type one of 'show', 'hide', 'drop' (a piece starts falling), 'snap' (it clicks into its slot), 'full', 'clear'.
 //
 // What makes the snap feel good, in order: the piece arrives fast and accelerating (no slow ease at the end), it sinks
 // a hair too deep and springs back (the click), it squashes flat and rebounds, a short glint runs over its face, a few
 // wood chips jump out of the joint, the plate takes the hit (dips, tilts away on that side, wobbles back), and the
 // pieces already in the pie twitch outward from the impact like a ripple. Filling the last slot sends one wave round.
-const Pies = (THREE, scene, npcs, opts = {}) => {
+const Pies = (THREE, scene, people, opts = {}) => {
   const R = 2.5;          // the plate's radius (m): a little under a tile across
   const RIM = 0.14;       // width of the raised rim
   const HUB = 0.2;        // radius of the hub in the middle
@@ -116,20 +117,20 @@ const Pies = (THREE, scene, npcs, opts = {}) => {
 
   const ease = { outBack: (u) => 1 + 2.4 * (u - 1) ** 3 + 1.4 * (u - 1) ** 2, outCubic: (u) => 1 - (1 - u) ** 3, inCubic: (u) => u * u * u };
   const emit = (type, pie, slot) => {
-    const detail = { type, npc: pie.id, slot, n: pie.n };
+    const detail = { type, character: pie.id, slot, n: pie.n };
     if (opts.onEvent) opts.onEvent(type, detail);
     window.dispatchEvent(new CustomEvent('agenda:pie', { detail }));
   };
 
   // ---------- one pie per NPC ----------
   const tiltQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), TILT);
-  const pies = npcs.list.map((npc) => {
-    const n = [6, 4, 5, 8, 3, 6, 7, 4][npc.id % 8];
+  const pies = people.list.map((who) => {
+    const n = [6, 4, 5, 8, 3, 6, 7, 4][who.id % 8];
     const holder = new THREE.Group(), pop = new THREE.Group(), inner = new THREE.Group();
     holder.add(pop); pop.add(inner);
-    holder.position.copy(npc.group.position); holder.position.y = npcs.height + LIFT + R;
-    holder.visible = false; holder.name = 'pie:' + npc.id;
-    const part = (geo, mat) => { const m = new THREE.Mesh(geo, mat); m.castShadow = true; m.receiveShadow = true; m.userData.npc = npc.id; inner.add(m); return m; };
+    holder.position.copy(who.group.position); holder.position.y = people.height + LIFT + R;
+    holder.visible = false; holder.name = 'pie:' + who.id;
+    const part = (geo, mat) => { const m = new THREE.Mesh(geo, mat); m.castShadow = true; m.receiveShadow = true; m.userData.who = who.id; inner.add(m); return m; };
     part(floorGeo, floorMat); part(rimGeo, lineMat); part(hubGeo, lineMat); part(backGeo, plateMat);
     for (let k = 0; k < n; k++) { // the spokes: thin raised ridges between the slots
       const a = slotAngles(n, k)[0], len = R - RIM - HUB, sp = part(new THREE.BoxGeometry(len, 0.05, 0.12), lineMat);
@@ -137,15 +138,15 @@ const Pies = (THREE, scene, npcs, opts = {}) => {
     }
     const pieces = [];
     for (let k = 0; k < n; k++) {
-      const w = wedge(n, k), mesh = new THREE.Mesh(w.geo, woodMat(w.m, npc.id * 3 + k));
-      mesh.castShadow = true; mesh.receiveShadow = true; mesh.visible = false; mesh.userData.npc = npc.id;
+      const w = wedge(n, k), mesh = new THREE.Mesh(w.geo, woodMat(w.m, who.id * 3 + k));
+      mesh.castShadow = true; mesh.receiveShadow = true; mesh.visible = false; mesh.userData.who = who.id;
       const glint = new THREE.Mesh(w.flat, new THREE.MeshBasicMaterial({ color: '#FFF6E0', transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
-      glint.userData.npc = npc.id; mesh.add(glint);
+      glint.userData.who = who.id; mesh.add(glint);
       inner.add(mesh);
       pieces.push({ k, mesh, glint, cx: w.cx, cy: w.cy, m: w.m, state: 'empty', t: 0, z: spring(1500, 0.2), sq: spring(1100, 0.18), bump: null, flash: 0 });
     }
     scene.add(holder);
-    return { id: npc.id, n, holder, pop, inner, pieces, filled: 0, shown: false, popT: 1, popDir: 0,
+    return { id: who.id, owner: who.group, n, holder, pop, inner, pieces, filled: 0, shown: false, popT: 1, popDir: 0,
       s: spring(240, 0.26), tx: spring(200, 0.24), ty: spring(200, 0.24), chips: [], finale: -1 };
   });
 
@@ -203,6 +204,7 @@ const Pies = (THREE, scene, npcs, opts = {}) => {
     for (const p of pies) {
       if (!p.holder.visible) continue;
       p.holder.quaternion.copy(camera.quaternion).multiply(tiltQ);
+      p.holder.position.x = p.owner.position.x; p.holder.position.z = p.owner.position.z; // over its owner's head
       // popping up (or away)
       if (p.popDir) {
         p.popT = Math.min(1, p.popT + dt / (p.popDir > 0 ? 0.38 : 0.22));

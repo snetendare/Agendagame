@@ -1,4 +1,4 @@
-// ===== The world: the board, the land around it, the NPCs and the camera =====
+// ===== The world: the board, the land around it, the characters and the camera =====
 // World(THREE, el) builds the scene into el and draws it whenever something changed (the camera moving, a resize, the
 // first frame, a pie animating). The board is BOARD.cols x BOARD.rows tiles of BOARD.tile metres, centred on the origin.
 const BOARD = { cols: 20, rows: 8, tile: 6 }; // NML's tiles (6 m), on a wider board: 120 x 48 m
@@ -44,18 +44,19 @@ const World = (THREE, el, opts = {}) => {
   scene.background.set('#A3B6B4'); scene.fog.color.set('#A3B6B4'); around.material.color.set('#64764D');
 
   // ---------- the people ----------
-  const npcs = NPCs(THREE, scene, BOARD);
-  const pies = Pies(THREE, scene, npcs, { onEvent: (type, detail) => opts.onPie && opts.onPie(type, detail) });
+  const match = opts.match || Match();
+  const people = Characters(THREE, scene, BOARD, match);
+  const pies = Pies(THREE, scene, people, { onEvent: (type, detail) => opts.onPie && opts.onPie(type, detail) });
+  const moves = Movement(THREE, scene, BOARD, people, { me: opts.me || 0 });
 
-  // ---------- picking: a tap on a person (or their pie) shows the pie, the next taps add pieces ----------
+  // ---------- taps: on a person (or their pie) shows the pie and the next taps add pieces; on a tile walks you there ----------
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
   function personAt(cx, cy) {
     const r = renderer.domElement.getBoundingClientRect();
     ndc.set((cx - r.left) / r.width * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
-    const hit = ray.intersectObjects([...npcs.list.map((n) => n.group), ...pies.targets()], true).find((h) => h.object.userData.npc != null || /^npc:/.test(h.object.parent.name));
-    if (!hit) return null;
-    return hit.object.userData.npc != null ? hit.object.userData.npc : +hit.object.parent.name.slice(4);
+    const hit = ray.intersectObjects([...people.list.map((n) => n.group), ...pies.targets()], true).find((h) => h.object.userData.who != null);
+    return hit ? hit.object.userData.who : null;
   }
   let lastPerson = null;
   const tapPerson = (id) => { lastPerson = id; pies.add(id); dirty = true; };
@@ -65,9 +66,14 @@ const World = (THREE, el, opts = {}) => {
 
   // ---------- the camera: NML's controls, starting in (and going back to) the tilted view ----------
   const cam = Camera3D(THREE, camera, renderer.domElement, {
-    width: BW, depth: BD, home: 1, farTop: npcs.height + 1,
+    width: BW, depth: BD, home: 1, farTop: people.height + 1, tapsEverywhere: true,
     onInput: () => { dirty = true; },
-    onTap: (point, cx, cy) => { const id = personAt(cx, cy); if (id != null) tapPerson(id); },
+    onTap: (point, cx, cy) => {
+      const id = personAt(cx, cy);
+      if (id != null) { tapPerson(id); return; }
+      const t = point && people.tileOf(point.x, point.z);
+      if (t) { moves.moveTo(moves.mine().id, t.col, t.row); dirty = true; }
+    },
   });
 
   function size() {
@@ -83,9 +89,10 @@ const World = (THREE, el, opts = {}) => {
   let last = performance.now(), frozen = false; // freeze(true) stops drawing (for stepping frames by hand in tests)
   function frame(now) {
     const dt = Math.min(0.1, (now - last) / 1000); last = now;
-    if (!frozen && (dirty || cam.busy() || pies.busy())) {
+    if (!frozen && (dirty || cam.busy() || pies.busy() || moves.busy())) {
       dirty = false;
       cam.update(dt);
+      moves.update(dt);
       pies.update(dt, camera);
       // the fog and the far plane follow how far back the camera stands: a tall phone screen has to stand far
       // back to fit the wide board, further than NML's fog (90 to 220 m) reaches
@@ -98,5 +105,5 @@ const World = (THREE, el, opts = {}) => {
   }
   requestAnimationFrame(frame);
 
-  return { scene, camera: cam, cam3: camera, npcs, pies, renderer, render: () => { dirty = true; }, freeze: (on) => { frozen = on; dirty = true; } };
+  return { scene, camera: cam, cam3: camera, match, people, pies, moves, setMe: (p) => { moves.setMe(p); dirty = true; }, renderer, render: () => { dirty = true; }, freeze: (on) => { frozen = on; dirty = true; } };
 };

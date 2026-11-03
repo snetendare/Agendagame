@@ -5,19 +5,24 @@
 html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; overscroll-behavior: none; }
 #world { position: fixed; inset: 0; }
 #world canvas { display: block; }
+.seat { position: fixed; top: calc(10px + env(safe-area-inset-top, 0px)); right: max(10px, env(safe-area-inset-right, 0px)); padding: 6px 10px; border: 0; border-radius: 6px;
+  background: rgba(13, 19, 21, 0.62); color: #DCE4E2; font: 12px/1.3 system-ui, sans-serif; cursor: pointer; }
+.seat:focus-visible { outline: 2px solid #F2D16B; outline-offset: 2px; }
 .hint { position: fixed; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); max-width: calc(100% - 32px);
   padding: 7px 12px; border-radius: 6px; background: rgba(13, 19, 21, 0.62); color: #DCE4E2; font: 13px/1.35 system-ui, sans-serif; text-align: center; pointer-events: none; }
 </style>
 
 
 <div id="world"></div>
-<div class="hint">Tap a person to show their pie. Tap again to add a piece. Space adds another.</div>
+<div class="hint">Tap a tile to walk there. Tap a person to show their pie, tap again to add a piece.</div>
+<button class="seat" id="seat" type="button">You are player 1 · switch</button>
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.min.js';
 // ===== 3D camera and its controls =====
 // Taken from No Mans Land (src/camera3d.js) on 2026-11-03. Changes here: opts.home is the view the camera starts in
 // and goes back to (Esc, a tap in a cinematic view); Agenda uses 1, the tilted view. opts.farTop replaces the enemy
-// tower's height in the tilted fit.
+// tower's height in the tilted fit. opts.tapsEverywhere: a tap in a cinematic view goes to opts.onTap too, instead of
+// taking the camera back home.
 // Camera3D(THREE, camera, el, opts) drives a THREE.PerspectiveCamera over the board from pointer, wheel and key input
 // on the element el.
 //
@@ -255,7 +260,7 @@ const Camera3D = (THREE, camera, el, opts) => {
     if (grab === e.pointerId) dropGrab(e.type === 'pointerup' ? groundAt(e.clientX, e.clientY) : null);
     if (tap && tap.id === e.pointerId && e.type === 'pointerup' && performance.now() - tap.t < TAP_MS) {
       swallow = { x: e.clientX, y: e.clientY, t: performance.now() };
-      if (handsOn()) { if (opts.onTap) opts.onTap(groundAt(e.clientX, e.clientY), e.clientX, e.clientY); }
+      if (handsOn() || opts.tapsEverywhere) { if (opts.onTap) opts.onTap(groundAt(e.clientX, e.clientY), e.clientX, e.clientY); }
       else goHome();
     }
     tap = null;
@@ -374,17 +379,34 @@ const Floor = (() => {
   return { paint, MEADOW };
 })();
 
-// ===== The people in the room: static NPCs =====
-// NPCs(THREE, scene, board) stands about 20 figures on tiles of the board. Each is No Mans Land's Flame Wizard body
-// (src/models3d.js) without the hat, the beard and the staff: a robe in its own colour and a head. They don't move yet.
-// board: { cols, rows, tile }. The board is centred on the origin, x across it, z down it (your side toward +z).
-// Returns { list }: one { id, col, row, robe, skin, facing, group } per NPC.
-const NPCs = (THREE, scene, board, opts = {}) => {
-  const COUNT = opts.count || 20;
+// ===== The match: what is drawn at random once per match and then stays the same =====
+// Match(seed) -> { seed, rng() }. rng is a seeded random generator, so everything picked from it (who stands where,
+// robe and skin colours, which two figures the players are) is the same for anyone who starts from the same seed:
+// a networked match only has to share the seed. A new page load is a new match with a new seed.
+const Match = (seed = Math.floor(Math.random() * 2147483646) + 1) => {
+  let sd = seed % 2147483647 || 1;
+  const rng = () => { sd = (sd * 16807) % 2147483647; return (sd - 1) / 2147483646; };
+  return { seed, rng };
+};
+
+// ===== The people in the room: 20 NPCs and the 2 players' characters, all alike =====
+// Characters(THREE, scene, board, match) stands 22 figures on tiles of the board. Each is No Mans Land's Flame Wizard
+// body (src/models3d.js) without the hat, the beard and the staff: a robe and a head. Nothing about a player's figure
+// tells it apart from the NPCs: the robe and skin colours, the tile and the facing are drawn from the match's random
+// numbers the same way for everyone, and the two players' figures get random places in the list (so not even the ids
+// give them away). Only the player's own view marks their figure (src/movement.js draws the circle under it).
+// board: { cols, rows, tile }. The board is centred on the origin, x across it, z down it.
+// Returns { list, height, players: [id of player 0's figure, id of player 1's], tileOf(x, z), centre(col, row) }.
+// Each in list: { id, player (0, 1 or null for an NPC), col, row, robe, skin, group }. col / row is the tile it stands on
+// (or is walking to: src/movement.js keeps them up to date).
+const Characters = (THREE, scene, board, match) => {
+  const NPCS = 20, PLAYERS = 2, COUNT = NPCS + PLAYERS;
   const SCALE = 2.2; // about 4 m tall on a 6 m tile: bigger than NML's units, so people read on the wide board
-  // robes: muted, distinct colours, so each person can be told apart from any view
+  // robes: muted, distinct colours, so each person can be told apart from any view (more than there are people, so
+  // which colours appear changes from match to match too)
   const ROBES = ['#B5523B', '#3E7CB1', '#D9A441', '#6B8F3A', '#8E5A9B', '#2F8F83', '#C9744A', '#5A6CB8', '#A63D5A', '#7F8A94',
-    '#D27FA0', '#4F6D3A', '#C2B280', '#7A4A33', '#49A0C9', '#9C2F2F', '#E0C95A', '#355C6E', '#B48ACB', '#E4E0D4'];
+    '#D27FA0', '#4F6D3A', '#C2B280', '#7A4A33', '#49A0C9', '#9C2F2F', '#E0C95A', '#355C6E', '#B48ACB', '#E4E0D4',
+    '#3B3F46', '#E08A3C', '#78B8A0', '#6A3E7C', '#A9B84A', '#5C8FD6'];
   const SKINS = ['#F1C8A6', '#D9A27A', '#B57A52', '#8A5636', '#5E3A24'];
   // the Flame Wizard's body, as in NML: a 7-sided robe 1.5 m tall and a faceted head (an icosahedron) on top
   const robeGeo = new THREE.ConeGeometry(0.6, 1.5, 7); robeGeo.translate(0, 0.75, 0);
@@ -392,32 +414,38 @@ const NPCs = (THREE, scene, board, opts = {}) => {
   const mat = (hex) => new THREE.MeshStandardMaterial({ color: hex, roughness: 0.85, metalness: 0, flatShading: true });
   const skinMats = SKINS.map(mat);
 
-  // seeded, so the room is the same every time it opens
-  let sd = 4242; const rr = () => { sd = (sd * 16807) % 2147483647; return (sd - 1) / 2147483646; };
+  const rr = match.rng;
+  const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rr() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
   const tiles = [];
   for (let r = 0; r < board.rows; r++) for (let c = 0; c < board.cols; c++) tiles.push([c, r]);
-  for (let i = tiles.length - 1; i > 0; i--) { const j = Math.floor(rr() * (i + 1)); [tiles[i], tiles[j]] = [tiles[j], tiles[i]]; }
+  shuffle(tiles);
+  const robes = shuffle(ROBES.slice());
+  const playerIds = shuffle([...Array(COUNT).keys()]).slice(0, PLAYERS);
 
   const T = board.tile, BW = board.cols * T, BD = board.rows * T;
+  const centre = (col, row) => [(col + 0.5) * T - BW / 2, (row + 0.5) * T - BD / 2];
+  const tileOf = (x, z) => { const col = Math.floor((x + BW / 2) / T), row = Math.floor((z + BD / 2) / T); return col >= 0 && col < board.cols && row >= 0 && row < board.rows ? { col, row } : null; };
   const list = [];
-  for (let i = 0; i < Math.min(COUNT, tiles.length); i++) {
-    const [col, row] = tiles[i], robe = ROBES[i % ROBES.length], skin = Math.floor(rr() * SKINS.length);
+  for (let i = 0; i < COUNT; i++) {
+    const [col, row] = tiles[i], robe = robes[i], skin = Math.floor(rr() * SKINS.length), facing = rr() * Math.PI * 2;
     const g = new THREE.Group();
     const body = new THREE.Mesh(robeGeo, mat(robe)), head = new THREE.Mesh(headGeo, skinMats[skin]);
-    for (const m of [body, head]) { m.castShadow = true; m.receiveShadow = true; g.add(m); }
-    const facing = rr() * Math.PI * 2;
-    g.position.set((col + 0.5) * T - BW / 2, 0, (row + 0.5) * T - BD / 2);
+    for (const m of [body, head]) { m.castShadow = true; m.receiveShadow = true; m.userData.who = i; g.add(m); }
+    const [x, z] = centre(col, row);
+    g.position.set(x, 0, z);
     g.rotation.y = facing;
     g.scale.setScalar(SCALE);
-    g.name = 'npc:' + i;
+    g.name = 'who:' + i;
     scene.add(g);
-    list.push({ id: i, col, row, robe, skin: SKINS[skin], facing, group: g });
+    const p = playerIds.indexOf(i);
+    list.push({ id: i, player: p < 0 ? null : p, col, row, robe, skin: SKINS[skin], group: g });
   }
-  return { list, height: 1.85 * SCALE };
+  return { list, height: 1.85 * SCALE, radius: 0.6 * SCALE, players: playerIds, tileOf, centre };
 };
 
 // ===== Pies: a grey plate with outlined slots that a character holds up, filled with wooden pieces =====
-// Pies(THREE, scene, npcs, opts) gives every NPC a pie (hidden until shown). A pie floats above its owner's head and
+// Pies(THREE, scene, people, opts) gives every character (src/characters.js) a pie, hidden until shown. A pie floats
+// above its owner's head (following them as they walk) and
 // always faces the camera. It has n slots (3 to 8), filled clockwise from the top like a clock.
 //
 // Calls:
@@ -426,15 +454,15 @@ const NPCs = (THREE, scene, board, opts = {}) => {
 //                        pie, takes the pieces out again)
 //   clear(id)            take all the pieces out
 //   update(dt, camera)   once per drawn frame; busy() is true while anything is still moving
-//   targets()            meshes to raycast against for picking, each with userData.npc
-// Events (for sound later): opts.onEvent(type, detail) and a window event 'agenda:pie' with { type, npc, slot, n },
+//   targets()            meshes to raycast against for picking, each with userData.who (the character's id)
+// Events (for sound later): opts.onEvent(type, detail) and a window event 'agenda:pie' with { type, character, slot, n },
 // type one of 'show', 'hide', 'drop' (a piece starts falling), 'snap' (it clicks into its slot), 'full', 'clear'.
 //
 // What makes the snap feel good, in order: the piece arrives fast and accelerating (no slow ease at the end), it sinks
 // a hair too deep and springs back (the click), it squashes flat and rebounds, a short glint runs over its face, a few
 // wood chips jump out of the joint, the plate takes the hit (dips, tilts away on that side, wobbles back), and the
 // pieces already in the pie twitch outward from the impact like a ripple. Filling the last slot sends one wave round.
-const Pies = (THREE, scene, npcs, opts = {}) => {
+const Pies = (THREE, scene, people, opts = {}) => {
   const R = 2.5;          // the plate's radius (m): a little under a tile across
   const RIM = 0.14;       // width of the raised rim
   const HUB = 0.2;        // radius of the hub in the middle
@@ -534,20 +562,20 @@ const Pies = (THREE, scene, npcs, opts = {}) => {
 
   const ease = { outBack: (u) => 1 + 2.4 * (u - 1) ** 3 + 1.4 * (u - 1) ** 2, outCubic: (u) => 1 - (1 - u) ** 3, inCubic: (u) => u * u * u };
   const emit = (type, pie, slot) => {
-    const detail = { type, npc: pie.id, slot, n: pie.n };
+    const detail = { type, character: pie.id, slot, n: pie.n };
     if (opts.onEvent) opts.onEvent(type, detail);
     window.dispatchEvent(new CustomEvent('agenda:pie', { detail }));
   };
 
   // ---------- one pie per NPC ----------
   const tiltQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), TILT);
-  const pies = npcs.list.map((npc) => {
-    const n = [6, 4, 5, 8, 3, 6, 7, 4][npc.id % 8];
+  const pies = people.list.map((who) => {
+    const n = [6, 4, 5, 8, 3, 6, 7, 4][who.id % 8];
     const holder = new THREE.Group(), pop = new THREE.Group(), inner = new THREE.Group();
     holder.add(pop); pop.add(inner);
-    holder.position.copy(npc.group.position); holder.position.y = npcs.height + LIFT + R;
-    holder.visible = false; holder.name = 'pie:' + npc.id;
-    const part = (geo, mat) => { const m = new THREE.Mesh(geo, mat); m.castShadow = true; m.receiveShadow = true; m.userData.npc = npc.id; inner.add(m); return m; };
+    holder.position.copy(who.group.position); holder.position.y = people.height + LIFT + R;
+    holder.visible = false; holder.name = 'pie:' + who.id;
+    const part = (geo, mat) => { const m = new THREE.Mesh(geo, mat); m.castShadow = true; m.receiveShadow = true; m.userData.who = who.id; inner.add(m); return m; };
     part(floorGeo, floorMat); part(rimGeo, lineMat); part(hubGeo, lineMat); part(backGeo, plateMat);
     for (let k = 0; k < n; k++) { // the spokes: thin raised ridges between the slots
       const a = slotAngles(n, k)[0], len = R - RIM - HUB, sp = part(new THREE.BoxGeometry(len, 0.05, 0.12), lineMat);
@@ -555,15 +583,15 @@ const Pies = (THREE, scene, npcs, opts = {}) => {
     }
     const pieces = [];
     for (let k = 0; k < n; k++) {
-      const w = wedge(n, k), mesh = new THREE.Mesh(w.geo, woodMat(w.m, npc.id * 3 + k));
-      mesh.castShadow = true; mesh.receiveShadow = true; mesh.visible = false; mesh.userData.npc = npc.id;
+      const w = wedge(n, k), mesh = new THREE.Mesh(w.geo, woodMat(w.m, who.id * 3 + k));
+      mesh.castShadow = true; mesh.receiveShadow = true; mesh.visible = false; mesh.userData.who = who.id;
       const glint = new THREE.Mesh(w.flat, new THREE.MeshBasicMaterial({ color: '#FFF6E0', transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
-      glint.userData.npc = npc.id; mesh.add(glint);
+      glint.userData.who = who.id; mesh.add(glint);
       inner.add(mesh);
       pieces.push({ k, mesh, glint, cx: w.cx, cy: w.cy, m: w.m, state: 'empty', t: 0, z: spring(1500, 0.2), sq: spring(1100, 0.18), bump: null, flash: 0 });
     }
     scene.add(holder);
-    return { id: npc.id, n, holder, pop, inner, pieces, filled: 0, shown: false, popT: 1, popDir: 0,
+    return { id: who.id, owner: who.group, n, holder, pop, inner, pieces, filled: 0, shown: false, popT: 1, popDir: 0,
       s: spring(240, 0.26), tx: spring(200, 0.24), ty: spring(200, 0.24), chips: [], finale: -1 };
   });
 
@@ -621,6 +649,7 @@ const Pies = (THREE, scene, npcs, opts = {}) => {
     for (const p of pies) {
       if (!p.holder.visible) continue;
       p.holder.quaternion.copy(camera.quaternion).multiply(tiltQ);
+      p.holder.position.x = p.owner.position.x; p.holder.position.z = p.owner.position.z; // over its owner's head
       // popping up (or away)
       if (p.popDir) {
         p.popT = Math.min(1, p.popT + dt / (p.popDir > 0 ? 0.38 : 0.22));
@@ -690,7 +719,167 @@ const Pies = (THREE, scene, npcs, opts = {}) => {
   return { show, hide, add, clear, update, busy, targets, list: pies };
 };
 
-// ===== The world: the board, the land around it, the NPCs and the camera =====
+// ===== Walking: the players move their figures tile to tile, and see their own figure and plan marked =====
+// Movement(THREE, scene, board, people, opts) walks characters (src/characters.js) along paths over the tiles.
+//   moveTo(id, col, row)  walk figure id to that tile, round anyone standing in the way (8 directions, no cutting past
+//                         a corner that a figure fills); a tile someone stands on gives the nearest free tile instead.
+//                         Returns false when there's no way there.
+//   setMe(player)         whose view this is (0 or 1): only that player's figure gets the circle under it, and only that
+//                         player's planned path is drawn. The other player's figure looks like any NPC.
+//   update(dt), busy()    once per drawn frame; busy while anyone walks
+// Everyone walks at SPEED: NML's move speed 2 (metres a second; the Flame Wizard's), so a tile takes 3 s.
+// The path is a smooth curve through the tiles' middles; the arrow on the ground is that same curve, from the figure to
+// the end, shrinking as it walks.
+const Movement = (THREE, scene, board, people, opts = {}) => {
+  const SPEED = 2;          // m/s, NML's move speed 2
+  const TURN = 9;           // how fast a figure turns to face where it walks (per second)
+  const ARROW_W = 0.9;      // the path arrow's width (m)
+  const HEAD_L = 1.9, HEAD_W = 2.4; // its head
+  const MINE = '#F2D16B';   // your marks: the circle, the arrow, the destination
+  const T = board.tile;
+  let me = opts.me || 0;
+
+  // ---------- your marks ----------
+  const markMat = (opacity) => new THREE.MeshBasicMaterial({ color: MINE, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  const r0 = people.radius * 1.3;
+  const ring = new THREE.Group();
+  const ringLine = new THREE.Mesh(new THREE.RingGeometry(r0, r0 + 0.32, 56), markMat(0.95));
+  const ringFill = new THREE.Mesh(new THREE.CircleGeometry(r0, 56), markMat(0.16));
+  for (const m of [ringLine, ringFill]) { m.rotation.x = -Math.PI / 2; m.renderOrder = 2; ring.add(m); }
+  ring.position.y = 0.05; scene.add(ring);
+  const arrow = new THREE.Mesh(new THREE.BufferGeometry(), markMat(0.85)); arrow.renderOrder = 3; arrow.visible = false; scene.add(arrow);
+  // the destination: a square just inside the tile
+  const sq = (T / 2 - 0.35) * Math.SQRT2;
+  const dest = new THREE.Mesh(new THREE.RingGeometry(sq - 0.3, sq, 4, 1, Math.PI / 4), markMat(0.9));
+  dest.rotation.x = -Math.PI / 2; dest.position.y = 0.05; dest.renderOrder = 2; dest.visible = false; scene.add(dest);
+
+  // ---------- paths over the tiles ----------
+  const key = (c, r) => c + ',' + r;
+  const inside = (c, r) => c >= 0 && c < board.cols && r >= 0 && r < board.rows;
+  const walks = new Map(); // id -> { curve, len, s }
+  // tiles taken by everyone but id: where they stand, and where they're walking to
+  function taken(id) {
+    const out = new Set();
+    for (const p of people.list) {
+      if (p.id === id) continue;
+      out.add(key(p.col, p.row));
+      const t = people.tileOf(p.group.position.x, p.group.position.z); if (t) out.add(key(t.col, t.row));
+    }
+    return out;
+  }
+  // A*: 8 directions, a diagonal step costs sqrt 2 and may not squeeze past a taken tile on either side
+  function path(from, to, blocked) {
+    const D = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+    const h = (c, r) => { const dx = Math.abs(c - to.col), dy = Math.abs(r - to.row); return Math.max(dx, dy) + (Math.SQRT2 - 1) * Math.min(dx, dy); };
+    const g = new Map([[key(from.col, from.row), 0]]), prev = new Map(), open = [{ c: from.col, r: from.row, f: h(from.col, from.row) }], done = new Set();
+    while (open.length) {
+      let bi = 0; for (let i = 1; i < open.length; i++) if (open[i].f < open[bi].f) bi = i;
+      const { c, r } = open.splice(bi, 1)[0], k = key(c, r);
+      if (done.has(k)) continue; done.add(k);
+      if (c === to.col && r === to.row) { const out = [[c, r]]; let q = k; while (prev.has(q)) { q = prev.get(q); out.unshift(q.split(',').map(Number)); } return out; }
+      for (const [dc, dr] of D) {
+        const nc = c + dc, nr = r + dr, nk = key(nc, nr);
+        if (!inside(nc, nr) || blocked.has(nk) || done.has(nk)) continue;
+        if (dc && dr && (blocked.has(key(c + dc, r)) || blocked.has(key(c, r + dr)))) continue;
+        const ng = g.get(k) + (dc && dr ? Math.SQRT2 : 1);
+        if (ng < (g.has(nk) ? g.get(nk) : Infinity)) { g.set(nk, ng); prev.set(nk, k); open.push({ c: nc, r: nr, f: ng + h(nc, nr) }); }
+      }
+    }
+    return null;
+  }
+  // can a figure walk straight from a to b (x, z) without its body crossing a taken tile?
+  function clear(a, b, blocked) {
+    const dx = b[0] - a[0], dz = b[1] - a[1], L = Math.hypot(dx, dz), n = Math.ceil(L / 0.5), w = people.radius * 0.9;
+    const px = L ? -dz / L * w : 0, pz = L ? dx / L * w : 0;
+    for (let k = 0; k <= n; k++) {
+      const x = a[0] + dx * k / n, z = a[1] + dz * k / n;
+      for (const o of [-1, 0, 1]) { const t = people.tileOf(x + px * o, z + pz * o); if (!t || blocked.has(key(t.col, t.row))) return false; }
+    }
+    return true;
+  }
+  // the free tile nearest to (col, row), ties going to the one nearer the walker
+  function nearestFree(col, row, blocked, from) {
+    let best = null, bd = Infinity;
+    for (let r = 0; r < board.rows; r++) for (let c = 0; c < board.cols; c++) {
+      if (blocked.has(key(c, r))) continue;
+      const d = Math.hypot(c - col, r - row) + 0.01 * Math.hypot(c - from.col, r - from.row);
+      if (d < bd) { bd = d; best = { col: c, row: r }; }
+    }
+    return best;
+  }
+  function moveTo(id, col, row) {
+    const who = people.list[id]; if (!who || !inside(col, row)) return false;
+    const pos = who.group.position, blocked = taken(id), from = people.tileOf(pos.x, pos.z);
+    let to = { col, row };
+    if (blocked.has(key(col, row))) to = nearestFree(col, row, blocked, from);
+    if (!to) return false;
+    blocked.delete(key(from.col, from.row));
+    const tiles = path(from, to, blocked);
+    if (!tiles) return false;
+    // from where the figure is now, through the middles of the tiles after the one it's on, pulled straight: a corner
+    // is kept only where a straight line to a later tile would brush someone (A* zigzags between equally short routes)
+    const mids = (tiles.length > 1 ? tiles.slice(1) : tiles).map(([c, r]) => people.centre(c, r));
+    const pts = [new THREE.Vector3(pos.x, 0, pos.z)];
+    let at = [pos.x, pos.z], i = 0;
+    while (i < mids.length) {
+      let j = mids.length - 1;
+      while (j > i && !clear(at, mids[j], blocked)) j--;
+      at = mids[j]; pts.push(new THREE.Vector3(at[0], 0, at[1])); i = j + 1;
+    }
+    if (pts[0].distanceTo(pts[pts.length - 1]) < 0.01 && pts.length === 2) { who.col = to.col; who.row = to.row; return true; }
+    const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
+    walks.set(id, { curve, len: curve.getLength(), s: 0 });
+    who.col = to.col; who.row = to.row;
+    if (who.player === me) markDest(to);
+    return true;
+  }
+  function markDest(to) { const [x, z] = people.centre(to.col, to.row); dest.position.x = x; dest.position.z = z; dest.visible = true; }
+
+  // ---------- the arrow: a flat ribbon along the rest of the curve, with a head ----------
+  const tmp = new THREE.Vector3(), tan = new THREE.Vector3();
+  function drawArrow(w) {
+    const left = w.len - w.s;
+    if (left < 0.05) { arrow.visible = false; return; }
+    const head = Math.min(HEAD_L, left), shaftEnd = w.len - head;
+    const pos = [], idx = [];
+    const at = (s) => { const u = Math.min(1, Math.max(0, s / w.len)); w.curve.getPointAt(u, tmp); w.curve.getTangentAt(u, tan); return [tmp.x, tmp.z, tan.x, tan.z]; };
+    const n = Math.max(1, Math.ceil((shaftEnd - w.s) / 0.4));
+    if (shaftEnd > w.s) for (let i = 0; i <= n; i++) {
+      const [x, z, tx, tz] = at(w.s + (shaftEnd - w.s) * i / n), l = Math.hypot(tx, tz) || 1, px = -tz / l * ARROW_W / 2, pz = tx / l * ARROW_W / 2;
+      pos.push(x + px, 0.06, z + pz, x - px, 0.06, z - pz);
+      if (i) { const b = pos.length / 3 - 4; idx.push(b, b + 1, b + 2, b + 1, b + 3, b + 2); }
+    }
+    const [hx, hz, tx, tz] = at(shaftEnd), l = Math.hypot(tx, tz) || 1, [ex, ez] = at(w.len), b = pos.length / 3;
+    const k = HEAD_W / 2 * Math.min(1, head / HEAD_L);
+    pos.push(hx - tz / l * k, 0.06, hz + tx / l * k, hx + tz / l * k, 0.06, hz - tx / l * k, ex, 0.06, ez);
+    idx.push(b, b + 1, b + 2);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx);
+    arrow.geometry.dispose(); arrow.geometry = g; arrow.visible = true;
+  }
+
+  // ---------- walking ----------
+  const turnTo = (g, yaw, dt) => { let d = yaw - g.rotation.y; d = Math.atan2(Math.sin(d), Math.cos(d)); g.rotation.y += d * Math.min(1, TURN * dt); };
+  function update(dt) {
+    for (const [id, w] of walks) {
+      const g = people.list[id].group;
+      w.s = Math.min(w.len, w.s + SPEED * dt);
+      const u = w.s / w.len;
+      w.curve.getPointAt(u, tmp); w.curve.getTangentAt(u, tan);
+      g.position.x = tmp.x; g.position.z = tmp.z;
+      turnTo(g, Math.atan2(-tan.x, -tan.z), dt); // the body faces -z
+      if (w.s >= w.len) walks.delete(id);
+    }
+    const mine = people.list.find((p) => p.player === me);
+    ring.position.x = mine.group.position.x; ring.position.z = mine.group.position.z;
+    const w = walks.get(mine.id);
+    if (w) drawArrow(w); else { arrow.visible = false; dest.visible = false; }
+  }
+  function setMe(p) { me = p; const w = walks.get(people.list.find((q) => q.player === me).id); dest.visible = false; if (w) { const who = people.list.find((q) => q.player === me); markDest(who); } }
+  return { moveTo, setMe, update, busy: () => walks.size > 0, me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
+};
+
+// ===== The world: the board, the land around it, the characters and the camera =====
 // World(THREE, el) builds the scene into el and draws it whenever something changed (the camera moving, a resize, the
 // first frame, a pie animating). The board is BOARD.cols x BOARD.rows tiles of BOARD.tile metres, centred on the origin.
 const BOARD = { cols: 20, rows: 8, tile: 6 }; // NML's tiles (6 m), on a wider board: 120 x 48 m
@@ -736,18 +925,19 @@ const World = (THREE, el, opts = {}) => {
   scene.background.set('#A3B6B4'); scene.fog.color.set('#A3B6B4'); around.material.color.set('#64764D');
 
   // ---------- the people ----------
-  const npcs = NPCs(THREE, scene, BOARD);
-  const pies = Pies(THREE, scene, npcs, { onEvent: (type, detail) => opts.onPie && opts.onPie(type, detail) });
+  const match = opts.match || Match();
+  const people = Characters(THREE, scene, BOARD, match);
+  const pies = Pies(THREE, scene, people, { onEvent: (type, detail) => opts.onPie && opts.onPie(type, detail) });
+  const moves = Movement(THREE, scene, BOARD, people, { me: opts.me || 0 });
 
-  // ---------- picking: a tap on a person (or their pie) shows the pie, the next taps add pieces ----------
+  // ---------- taps: on a person (or their pie) shows the pie and the next taps add pieces; on a tile walks you there ----------
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
   function personAt(cx, cy) {
     const r = renderer.domElement.getBoundingClientRect();
     ndc.set((cx - r.left) / r.width * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
-    const hit = ray.intersectObjects([...npcs.list.map((n) => n.group), ...pies.targets()], true).find((h) => h.object.userData.npc != null || /^npc:/.test(h.object.parent.name));
-    if (!hit) return null;
-    return hit.object.userData.npc != null ? hit.object.userData.npc : +hit.object.parent.name.slice(4);
+    const hit = ray.intersectObjects([...people.list.map((n) => n.group), ...pies.targets()], true).find((h) => h.object.userData.who != null);
+    return hit ? hit.object.userData.who : null;
   }
   let lastPerson = null;
   const tapPerson = (id) => { lastPerson = id; pies.add(id); dirty = true; };
@@ -757,9 +947,14 @@ const World = (THREE, el, opts = {}) => {
 
   // ---------- the camera: NML's controls, starting in (and going back to) the tilted view ----------
   const cam = Camera3D(THREE, camera, renderer.domElement, {
-    width: BW, depth: BD, home: 1, farTop: npcs.height + 1,
+    width: BW, depth: BD, home: 1, farTop: people.height + 1, tapsEverywhere: true,
     onInput: () => { dirty = true; },
-    onTap: (point, cx, cy) => { const id = personAt(cx, cy); if (id != null) tapPerson(id); },
+    onTap: (point, cx, cy) => {
+      const id = personAt(cx, cy);
+      if (id != null) { tapPerson(id); return; }
+      const t = point && people.tileOf(point.x, point.z);
+      if (t) { moves.moveTo(moves.mine().id, t.col, t.row); dirty = true; }
+    },
   });
 
   function size() {
@@ -775,9 +970,10 @@ const World = (THREE, el, opts = {}) => {
   let last = performance.now(), frozen = false; // freeze(true) stops drawing (for stepping frames by hand in tests)
   function frame(now) {
     const dt = Math.min(0.1, (now - last) / 1000); last = now;
-    if (!frozen && (dirty || cam.busy() || pies.busy())) {
+    if (!frozen && (dirty || cam.busy() || pies.busy() || moves.busy())) {
       dirty = false;
       cam.update(dt);
+      moves.update(dt);
       pies.update(dt, camera);
       // the fog and the far plane follow how far back the camera stands: a tall phone screen has to stand far
       // back to fit the wide board, further than NML's fog (90 to 220 m) reaches
@@ -790,8 +986,11 @@ const World = (THREE, el, opts = {}) => {
   }
   requestAnimationFrame(frame);
 
-  return { scene, camera: cam, cam3: camera, npcs, pies, renderer, render: () => { dirty = true; }, freeze: (on) => { frozen = on; dirty = true; } };
+  return { scene, camera: cam, cam3: camera, match, people, pies, moves, setMe: (p) => { moves.setMe(p); dirty = true; }, renderer, render: () => { dirty = true; }, freeze: (on) => { frozen = on; dirty = true; } };
 };
 
 window.agenda = World(THREE, document.getElementById('world'));
+// testing hidden identity on one screen: see the match as either player (each sees only their own circle and path)
+const seat = document.getElementById('seat');
+seat.addEventListener('click', () => { const p = 1 - agenda.moves.me(); agenda.setMe(p); seat.textContent = `You are player ${p + 1} · switch`; });
 </script>

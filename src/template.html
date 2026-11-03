@@ -11,17 +11,24 @@
 html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; overscroll-behavior: none; }
 #world { position: fixed; inset: 0; }
 #world canvas { display: block; }
+.seat { position: fixed; top: calc(10px + env(safe-area-inset-top, 0px)); right: max(10px, env(safe-area-inset-right, 0px)); padding: 6px 10px; border: 0; border-radius: 6px;
+  background: rgba(13, 19, 21, 0.62); color: #DCE4E2; font: 12px/1.3 system-ui, sans-serif; cursor: pointer; }
+.seat:focus-visible { outline: 2px solid #F2D16B; outline-offset: 2px; }
 .hint { position: fixed; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); max-width: calc(100% - 32px);
   padding: 7px 12px; border-radius: 6px; background: rgba(13, 19, 21, 0.62); color: #DCE4E2; font: 13px/1.35 system-ui, sans-serif; text-align: center; pointer-events: none; }
 </style>
 </head>
 <body>
 <div id="world"></div>
-<div class="hint">Tap a person to show their pie. Tap again to add a piece. Space adds another.</div>
+<div class="hint">Tap a tile to walk there. Tap a person to show their pie, tap again to add a piece.</div>
+<button class="seat" id="seat" type="button">You are player 1 · switch</button>
 <script type="module">
 import * as THREE from '/*THREE_URL*/';
 /*CODE*/
 window.agenda = World(THREE, document.getElementById('world'));
+// testing hidden identity on one screen: see the match as either player (each sees only their own circle and path)
+const seat = document.getElementById('seat');
+seat.addEventListener('click', () => { const p = 1 - agenda.moves.me(); agenda.setMe(p); seat.textContent = `You are player ${p + 1} · switch`; });
 </script>
 </body>
 </html>
