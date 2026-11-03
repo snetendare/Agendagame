@@ -11,6 +11,11 @@
 //   setMe(player)         whose view this is (0 or 1): only that player's figure gets the circle under it, and only that
 //                         player's planned path is drawn. The other player's figure looks like any NPC.
 //   update(dt), busy()    once per drawn frame; busy while anyone walks
+//   inReach(id, col, row)  is that tile within REACH tiles of where the figure is now (8 directions, so a 7 x 7 square)
+//   preview(col, row)     mark where your queued walk goes (null clears it); it starts on the next tick
+// Nobody walks more than REACH tiles at a time: a longer route is cut after REACH steps (moveTo then returns 'leg',
+// and a seat at the far end isn't taken yet). The player has to steer leg by leg, and the NPCs walk the same way, so
+// how far someone goes in one go gives nothing away. The player sees their reach as a square on the floor.
 // Everyone walks at SPEED: NML's move speed 2 (metres a second; the Flame Wizard's), so a tile takes 3 s.
 // The path is a smooth curve through the tiles' middles; the arrow on the ground is that same curve, from the figure to
 // the end, shrinking as it walks.
@@ -23,6 +28,7 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   const ARROW_W = 0.9;      // the path arrow's width (m)
   const HEAD_L = 1.9, HEAD_W = 2.4; // its head
   const MINE = '#F2D16B';   // your marks: the circle, the arrow, the destination
+  const REACH = 3;          // tiles: the furthest anyone walks in one go
   const T = board.tile;
   let me = opts.me || 0;
 
@@ -39,6 +45,23 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   const sq = (T / 2 - 0.35) * Math.SQRT2;
   const dest = new THREE.Mesh(new THREE.RingGeometry(sq - 0.3, sq, 4, 1, Math.PI / 4), markMat(0.9));
   dest.rotation.x = -Math.PI / 2; dest.position.y = 0.05; dest.renderOrder = 2; dest.visible = false; scene.add(dest);
+  let pending = false; // a walk is queued for the next tick: its destination stays marked until it starts
+  // your reach: a faint square round the tiles you can walk to in one go
+  const reachMat = markMat(0.5), reachFill = markMat(0.05);
+  const reach = new THREE.Group(), reachLine = new THREE.Mesh(new THREE.BufferGeometry(), reachMat), reachIn = new THREE.Mesh(new THREE.BufferGeometry(), reachFill);
+  for (const m of [reachLine, reachIn]) { m.rotation.x = -Math.PI / 2; m.renderOrder = 1; reach.add(m); }
+  reach.position.y = 0.045; scene.add(reach);
+  let reachAt = '';
+  function drawReach(t) {
+    const k = t.col + ',' + t.row; if (k === reachAt) return; reachAt = k;
+    const c0 = Math.max(0, t.col - REACH), c1 = Math.min(board.cols - 1, t.col + REACH), r0_ = Math.max(0, t.row - REACH), r1_ = Math.min(board.rows - 1, t.row + REACH);
+    const BW = board.cols * T, BD = board.rows * T, x0 = c0 * T - BW / 2 + 0.2, x1 = (c1 + 1) * T - BW / 2 - 0.2, z0 = r0_ * T - BD / 2 + 0.2, z1 = (r1_ + 1) * T - BD / 2 - 0.2, w = 0.22;
+    // (drawn in x, -z: laid flat by a quarter turn round x)
+    const rect = (a0, a1, b0, b1, p) => { p.moveTo(a0, b0); p.lineTo(a1, b0); p.lineTo(a1, b1); p.lineTo(a0, b1); p.lineTo(a0, b0); return p; };
+    const outer = rect(x0, x1, -z1, -z0, new THREE.Shape()); outer.holes.push(rect(x0 + w, x1 - w, -z1 + w, -z0 - w, new THREE.Path()));
+    reachLine.geometry.dispose(); reachLine.geometry = new THREE.ShapeGeometry(outer);
+    reachIn.geometry.dispose(); reachIn.geometry = new THREE.ShapeGeometry(rect(x0 + w, x1 - w, -z1 + w, -z0 - w, new THREE.Shape()));
+  }
 
   // ---------- paths over the tiles ----------
   const key = (c, r) => c + ',' + r;
@@ -106,8 +129,13 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
     if (!seat && blocked.has(key(col, row))) to = nearestFree(col, row, blocked, from);
     if (!to) return false;
     blocked.delete(key(from.col, from.row));
-    const tiles = path(from, to, blocked);
+    let tiles = path(from, to, blocked);
     if (!tiles) return false;
+    let full = true;
+    if (tiles.length - 1 > REACH) { // too far for one go: walk the first REACH steps of the way
+      tiles = tiles.slice(0, REACH + 1); full = false; seat = null;
+      const [c, r] = tiles[tiles.length - 1]; to = { col: c, row: r };
+    }
     release(who); who.faceAt = null; who.spot = null;
     if (seat) { seat.by = id; who.seat = seat; }
     // from where the figure is now, through the middles of the tiles after the one it's on, pulled straight: a corner
@@ -121,13 +149,17 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
       at = mids[j]; pts.push(new THREE.Vector3(at[0], 0, at[1])); i = j + 1;
     }
     if (seat) pts[pts.length - 1].set(seat.x, 0, seat.z); // a seat's place isn't the tile's middle: it's pulled to its table
-    if (pts[0].distanceTo(pts[pts.length - 1]) < 0.05) { walks.delete(id); who.col = to.col; who.row = to.row; if (seat) who.seated = true; return true; }
+    if (who.player === me) pending = false;
+    if (pts[0].distanceTo(pts[pts.length - 1]) < 0.05) { walks.delete(id); who.col = to.col; who.row = to.row; if (seat) who.seated = true; return full || 'leg'; }
     const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
     walks.set(id, { curve, len: curve.getLength(), s: 0 });
     who.col = to.col; who.row = to.row;
     if (who.player === me) markDest(to);
-    return true;
+    return full || 'leg';
   }
+  const posTile = (id) => { const g = people.list[id].group.position; return people.tileOf(g.x, g.z); };
+  function inReach(id, col, row) { const t = posTile(id); return !!t && Math.max(Math.abs(t.col - col), Math.abs(t.row - row)) <= REACH; }
+  function preview(col, row) { if (col == null) { pending = false; return; } pending = true; markDest({ col, row }); }
   function sit(id, s) { return !!s && moveTo(id, s.col, s.row, s); }
   function leave(id) {
     const who = people.list[id], blocked = taken(id), t = people.tileOf(who.group.position.x, who.group.position.z);
@@ -194,9 +226,10 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
     const mine = people.list.find((p) => p.player === me);
     ring.position.x = mine.group.position.x; ring.position.z = mine.group.position.z;
     const w = walks.get(mine.id);
-    if (w) drawArrow(w); else { arrow.visible = false; dest.visible = false; }
+    if (w) drawArrow(w); else { arrow.visible = false; dest.visible = pending; }
+    drawReach(posTile(mine.id) || mine);
   }
-  function setMe(p) { me = p; const w = walks.get(people.list.find((q) => q.player === me).id); dest.visible = false; if (w) { const who = people.list.find((q) => q.player === me); markDest(who); } }
+  function setMe(p) { me = p; pending = false; reachAt = ''; const w = walks.get(people.list.find((q) => q.player === me).id); dest.visible = false; if (w) { const who = people.list.find((q) => q.player === me); markDest(who); } }
   const off = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
   // face(id, x, z): standing still, turn to look at that point (someone you talk to, the middle of a group)
   function face(id, x, z) { const who = people.list[id]; who.faceAt = [x, z]; }
@@ -205,5 +238,5 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
     || (!w.seated && w.faceAt && !walks.has(w.id) && off(faceYaw(w), w.group.rotation.y) > 0.01)
     || (!w.seated && w.spot && !walks.has(w.id) && Math.hypot(w.spot[0] - w.group.position.x, w.spot[1] - w.group.position.z) > 0.005)
     || w.pose !== (w.seated && w.seat.pose === 'sit' ? 1 : 0));
-  return { moveTo, sit, leave, face, stand, setMe, update, busy: () => walks.size > 0 || settling(), walking: (id) => walks.has(id), me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
+  return { moveTo, sit, leave, face, stand, setMe, update, inReach, preview, REACH, busy: () => walks.size > 0 || settling(), walking: (id) => walks.has(id), me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
 };

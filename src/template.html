@@ -20,7 +20,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; o
 .seat { padding: 6px 10px; border: 0; border-radius: 6px;
   background: rgba(52, 40, 32, 0.78); color: #EFE6DA; font: 12px/1.3 system-ui, sans-serif; cursor: pointer; }
 /* the popup over furniture: a small card, the action as one clear button */
-.pop { position: fixed; left: 0; top: 0; display: grid; gap: 2px 12px; grid-template-columns: auto auto; align-items: center; padding: 8px 8px 8px 12px; border-radius: 8px;
+.pop { position: fixed; z-index: 3; left: 0; top: 0; display: grid; gap: 2px 12px; grid-template-columns: auto auto; align-items: center; padding: 8px 8px 8px 12px; border-radius: 8px;
   background: rgba(36, 27, 21, 0.92); color: #EFE6DA; font: 13px/1.3 system-ui, sans-serif; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
 .pop[hidden] { display: none; }
 .pop-name { font-weight: 600; grid-column: 1; }
@@ -30,22 +30,41 @@ html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; o
 .pop-go:disabled { background: #6B5D50; color: #BFAF9C; cursor: default; }
 .pop-go:focus-visible { outline: 2px solid #FFF; outline-offset: 2px; }
 .seat:focus-visible { outline: 2px solid #F2D16B; outline-offset: 2px; }
+/* a person's chart in the popup, and your own in the HUD */
+.pop-chart { grid-column: 1 / span 2; display: flex; gap: 10px; align-items: center; margin-top: 6px; padding-top: 8px; border-top: 1px solid rgba(239, 230, 218, 0.12); }
+.pop-chart[hidden], .hud-chart[hidden] { display: none; }
+.pop-chart svg, .hud-chart svg { flex: none; display: block; }
+.chart-side { display: grid; gap: 2px; min-width: 0; }
+.chart-role { font-weight: 600; font-size: 12px; }
+.chart-meta { color: #BFAF9C; font-size: 11px; font-variant-numeric: tabular-nums; }
+.chip { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #E2D7C9; white-space: nowrap; }
+.chip i { width: 9px; height: 9px; border-radius: 2px; flex: none; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35); }
+.hud { position: fixed; z-index: 2; top: calc(10px + env(safe-area-inset-top, 0px)); left: max(10px, env(safe-area-inset-left, 0px)); display: grid; gap: 8px; padding: 8px 10px; border-radius: 8px;
+  background: rgba(36, 27, 21, 0.82); color: #EFE6DA; font: 12px/1.3 system-ui, sans-serif; pointer-events: none; max-width: calc(100% - 220px); }
+.hud-tick { display: flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
+.tick-ring { --t: 0; width: 16px; height: 16px; border-radius: 50%; flex: none; background: conic-gradient(#F2D16B calc(var(--t) * 360deg), rgba(239, 230, 218, 0.18) 0); -webkit-mask: radial-gradient(circle, transparent 4px, #000 4.5px); mask: radial-gradient(circle, transparent 4px, #000 4.5px); }
+.hud-chart { display: flex; gap: 8px; align-items: center; }
+.legend { display: grid; grid-template-columns: auto auto; gap: 2px 10px; }
+@media (max-width: 520px) { .legend { display: none; } .hud { max-width: calc(100% - 20px); top: calc(52px + env(safe-area-inset-top, 0px)); } }
 .hint { position: fixed; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); max-width: calc(100% - 32px);
   padding: 7px 12px; border-radius: 6px; background: rgba(52, 40, 32, 0.78); color: #EFE6DA; font: 13px/1.35 system-ui, sans-serif; text-align: center; pointer-events: none; }
 </style>
 </head>
 <body>
 <div id="world"></div>
-<div class="pop" id="pop" hidden><div class="pop-name" id="pop-name"></div><div class="pop-info" id="pop-info"></div><button class="pop-go" id="pop-go" type="button">Sit down</button></div>
+<div class="pop" id="pop" hidden><div class="pop-name" id="pop-name"></div><div class="pop-info" id="pop-info"></div><button class="pop-go" id="pop-go" type="button">Sit down</button><div class="pop-chart" id="pop-chart" hidden></div></div>
+<div class="hud"><div class="hud-tick"><div class="tick-ring" id="tick-ring"></div><span id="next">Tick 0</span></div><div class="hud-chart" id="hud-chart" hidden></div><div class="legend" id="legend"></div></div>
 <div class="labels" id="labels"></div>
 <div class="toast" id="toast" role="status" hidden></div>
-<div class="hint">Tap a tile to walk there. Tap a person to talk, a table or chair to sit.</div>
+<div class="hint">Tap a tile in your square to walk there (3 tiles at a time). Tap a person to see their chart and talk. Everything happens on the tick.</div>
 <div class="dev-bar"><button class="seat" id="types" type="button">Show types</button><button class="seat" id="seat" type="button">You are player 1 · switch</button></div>
 <script type="module">
 import * as THREE from '/*THREE_URL*/';
 /*CODE*/
 const $ = (id) => document.getElementById(id);
-window.agenda = World(THREE, $('world'), { ui: { popup: { el: $('pop'), name: $('pop-name'), info: $('pop-info'), go: $('pop-go') }, toast: $('toast'), labels: $('labels') } });
+window.agenda = World(THREE, $('world'), { ui: { popup: { el: $('pop'), name: $('pop-name'), info: $('pop-info'), go: $('pop-go'), chart: $('pop-chart') }, toast: $('toast'), labels: $('labels'),
+  hud: { ring: $('tick-ring'), next: $('next'), chart: $('hud-chart') } } });
+$('legend').innerHTML = EMOTIONS.map((e) => `<div class="chip"><i style="background:${e.color}"></i>${e.name}</div>`).join('');
 // for testing: each person's type, what they're doing and their mood
 let types = false;
 $('types').addEventListener('click', () => { types = !types; agenda.showTypes(types); $('types').textContent = types ? 'Hide types' : 'Show types'; });

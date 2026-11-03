@@ -14,7 +14,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; o
 .seat { padding: 6px 10px; border: 0; border-radius: 6px;
   background: rgba(52, 40, 32, 0.78); color: #EFE6DA; font: 12px/1.3 system-ui, sans-serif; cursor: pointer; }
 /* the popup over furniture: a small card, the action as one clear button */
-.pop { position: fixed; left: 0; top: 0; display: grid; gap: 2px 12px; grid-template-columns: auto auto; align-items: center; padding: 8px 8px 8px 12px; border-radius: 8px;
+.pop { position: fixed; z-index: 3; left: 0; top: 0; display: grid; gap: 2px 12px; grid-template-columns: auto auto; align-items: center; padding: 8px 8px 8px 12px; border-radius: 8px;
   background: rgba(36, 27, 21, 0.92); color: #EFE6DA; font: 13px/1.3 system-ui, sans-serif; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
 .pop[hidden] { display: none; }
 .pop-name { font-weight: 600; grid-column: 1; }
@@ -24,16 +24,33 @@ html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; o
 .pop-go:disabled { background: #6B5D50; color: #BFAF9C; cursor: default; }
 .pop-go:focus-visible { outline: 2px solid #FFF; outline-offset: 2px; }
 .seat:focus-visible { outline: 2px solid #F2D16B; outline-offset: 2px; }
+/* a person's chart in the popup, and your own in the HUD */
+.pop-chart { grid-column: 1 / span 2; display: flex; gap: 10px; align-items: center; margin-top: 6px; padding-top: 8px; border-top: 1px solid rgba(239, 230, 218, 0.12); }
+.pop-chart[hidden], .hud-chart[hidden] { display: none; }
+.pop-chart svg, .hud-chart svg { flex: none; display: block; }
+.chart-side { display: grid; gap: 2px; min-width: 0; }
+.chart-role { font-weight: 600; font-size: 12px; }
+.chart-meta { color: #BFAF9C; font-size: 11px; font-variant-numeric: tabular-nums; }
+.chip { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #E2D7C9; white-space: nowrap; }
+.chip i { width: 9px; height: 9px; border-radius: 2px; flex: none; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35); }
+.hud { position: fixed; z-index: 2; top: calc(10px + env(safe-area-inset-top, 0px)); left: max(10px, env(safe-area-inset-left, 0px)); display: grid; gap: 8px; padding: 8px 10px; border-radius: 8px;
+  background: rgba(36, 27, 21, 0.82); color: #EFE6DA; font: 12px/1.3 system-ui, sans-serif; pointer-events: none; max-width: calc(100% - 220px); }
+.hud-tick { display: flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
+.tick-ring { --t: 0; width: 16px; height: 16px; border-radius: 50%; flex: none; background: conic-gradient(#F2D16B calc(var(--t) * 360deg), rgba(239, 230, 218, 0.18) 0); -webkit-mask: radial-gradient(circle, transparent 4px, #000 4.5px); mask: radial-gradient(circle, transparent 4px, #000 4.5px); }
+.hud-chart { display: flex; gap: 8px; align-items: center; }
+.legend { display: grid; grid-template-columns: auto auto; gap: 2px 10px; }
+@media (max-width: 520px) { .legend { display: none; } .hud { max-width: calc(100% - 20px); top: calc(52px + env(safe-area-inset-top, 0px)); } }
 .hint { position: fixed; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); max-width: calc(100% - 32px);
   padding: 7px 12px; border-radius: 6px; background: rgba(52, 40, 32, 0.78); color: #EFE6DA; font: 13px/1.35 system-ui, sans-serif; text-align: center; pointer-events: none; }
 </style>
 
 
 <div id="world"></div>
-<div class="pop" id="pop" hidden><div class="pop-name" id="pop-name"></div><div class="pop-info" id="pop-info"></div><button class="pop-go" id="pop-go" type="button">Sit down</button></div>
+<div class="pop" id="pop" hidden><div class="pop-name" id="pop-name"></div><div class="pop-info" id="pop-info"></div><button class="pop-go" id="pop-go" type="button">Sit down</button><div class="pop-chart" id="pop-chart" hidden></div></div>
+<div class="hud"><div class="hud-tick"><div class="tick-ring" id="tick-ring"></div><span id="next">Tick 0</span></div><div class="hud-chart" id="hud-chart" hidden></div><div class="legend" id="legend"></div></div>
 <div class="labels" id="labels"></div>
 <div class="toast" id="toast" role="status" hidden></div>
-<div class="hint">Tap a tile to walk there. Tap a person to talk, a table or chair to sit.</div>
+<div class="hint">Tap a tile in your square to walk there (3 tiles at a time). Tap a person to see their chart and talk. Everything happens on the tick.</div>
 <div class="dev-bar"><button class="seat" id="types" type="button">Show types</button><button class="seat" id="seat" type="button">You are player 1 · switch</button></div>
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.min.js';
@@ -469,6 +486,38 @@ const Match = (seed = Math.floor(Math.random() * 2147483646) + 1) => {
   return { seed, rng };
 };
 
+// ===== Emotions: the six kinds of wooden piece, and the 2D personal chart =====
+// Every piece in a chart is one emotion. Indifference is plain wood; the others are painted wood.
+// chartSVG(pieces, known, size) draws a personal chart as an SVG string: one equal slice per piece (so the share of
+// each emotion is the chance it gets given), starting pieces first. A piece the viewer hasn't seen yet is grey with a
+// question mark; a starting piece the viewer has seen carries a small pin (it can never leave the chart).
+const EMOTIONS = [
+  { key: 'indifference', name: 'Indifference', color: '#C9A06A' },
+  { key: 'happiness', name: 'Happiness', color: '#E9C23A' },
+  { key: 'anger', name: 'Anger', color: '#C8432F' },
+  { key: 'doubt', name: 'Doubt', color: '#7D52A8' },
+  { key: 'anxiety', name: 'Anxiety', color: '#A4A8AD' },
+  { key: 'sadness', name: 'Sadness', color: '#3E6FB8' },
+];
+const EMO = Object.fromEntries(EMOTIONS.map((e) => [e.key, e]));
+
+function chartSVG(pieces, known, size = 96) {
+  const c = size / 2, r = size / 2 - 3, n = pieces.length, f = (v) => v.toFixed(2);
+  let out = `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" aria-hidden="true">`;
+  out += `<circle cx="${c}" cy="${c}" r="${r + 2}" fill="#1C1612"/>`;
+  if (!n) out += `<circle cx="${c}" cy="${c}" r="${r}" fill="#3A322B"/>`;
+  pieces.forEach((p, i) => {
+    const show = known(p), fill = show ? EMO[p.e].color : '#5C534B';
+    const a0 = -Math.PI / 2 + i * 2 * Math.PI / n, a1 = a0 + 2 * Math.PI / n, am = (a0 + a1) / 2;
+    if (n === 1) out += `<circle cx="${c}" cy="${c}" r="${r}" fill="${fill}" stroke="#1C1612" stroke-width="1.5"/>`;
+    else out += `<path d="M${c} ${c}L${f(c + r * Math.cos(a0))} ${f(c + r * Math.sin(a0))}A${r} ${r} 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${f(c + r * Math.cos(a1))} ${f(c + r * Math.sin(a1))}Z" fill="${fill}" stroke="#1C1612" stroke-width="1.5"/>`;
+    const mr = n === 1 ? 0 : r * 0.6, mx = c + mr * Math.cos(am), my = c + mr * Math.sin(am);
+    if (!show) out += `<text x="${f(mx)}" y="${f(my)}" text-anchor="middle" dominant-baseline="central" font-family="system-ui,sans-serif" font-weight="700" font-size="${f(Math.max(9, size * (n > 8 ? 0.11 : 0.16)))}" fill="#CFC3B4">?</text>`;
+    else if (p.start) out += `<circle cx="${f(mx)}" cy="${f(my)}" r="${f(size * 0.045)}" fill="#F4EADC" stroke="#1C1612" stroke-width="1.2"/>`;
+  });
+  return out + '</svg>';
+}
+
 // ===== Furniture: the things people use (the dining table, standing tables, the bar, chairs by the walls) =====
 // Furniture(THREE, scene, board) places the pieces on the tiles of the board and gives each its places to be:
 //   the dining table, 3 x 1 tiles, 8 seats round it (3 on each long side, one at each end)
@@ -694,26 +743,25 @@ const Characters = (THREE, scene, board, match, avoid = new Set()) => {
   return { list, height: 1.85 * SCALE, radius: 0.6 * SCALE, players: playerIds, tileOf, centre };
 };
 
-// ===== Pies: a grey plate with outlined slots that a character holds up, filled with wooden pieces =====
-// Pies(THREE, scene, people, opts) gives every character (src/characters.js) a pie, hidden until shown. A pie floats
-// above its owner's head (following them as they walk) and
-// always faces the camera. It has n slots (3 to 8), filled clockwise from the top like a clock.
+// ===== Conversation pies: one shared grey plate per conversation, with outlined slots filled by wooden pieces =====
+// Pies(THREE, scene, opts) draws the conversation charts. A pie floats over the middle of its conversation (over the
+// table, for people seated together), always faces the camera, and has n slots counted clockwise from the top like a
+// clock. Each piece is one emotion (src/emotions.js): indifference is plain wood, the others painted wood.
 //
 // Calls:
-//   show(id) / hide(id)  pop the pie up over NPC id, or tuck it away
-//   add(id)              drop the next wooden piece into its slot (shows the pie first if it was hidden; on a full
-//                        pie, takes the pieces out again)
-//   clear(id)            take all the pieces out
-//   update(dt, camera)   once per drawn frame; busy() is true while anything is still moving
-//   targets()            meshes to raycast against for picking, each with userData.who (the character's id)
-// Events (for sound later): opts.onEvent(type, detail) and a window event 'agenda:pie' with { type, character, slot, n },
-// type one of 'show', 'hide', 'drop' (a piece starts falling), 'snap' (it clicks into its slot), 'full', 'clear'.
+//   create(key, n, where)  a new pie with n empty slots; where() -> [x, z] is where it hangs (it eases there)
+//   destroy(key)           pop it away
+//   put(key, slot, e)      drop a piece of emotion e into that (empty) slot
+//   take(key, slot)        lift the piece out of that slot
+//   update(dt, camera)     once per drawn frame; busy() is true while anything is still moving
+// Events (for sound later): opts.onEvent(type, detail) and a window event 'agenda:pie' with { type, convo, slot, n, e },
+// type one of 'show', 'hide', 'drop' (a piece starts falling), 'snap' (it clicks into its slot), 'full', 'take'.
 //
 // What makes the snap feel good, in order: the piece arrives fast and accelerating (no slow ease at the end), it sinks
 // a hair too deep and springs back (the click), it squashes flat and rebounds, a short glint runs over its face, a few
 // wood chips jump out of the joint, the plate takes the hit (dips, tilts away on that side, wobbles back), and the
 // pieces already in the pie twitch outward from the impact like a ripple. Filling the last slot sends one wave round.
-const Pies = (THREE, scene, people, opts = {}) => {
+const Pies = (THREE, scene, opts = {}) => {
   const R = 2.5;          // the plate's radius (m): a little under a tile across
   const RIM = 0.14;       // width of the raised rim
   const HUB = 0.2;        // radius of the hub in the middle
@@ -721,10 +769,11 @@ const Pies = (THREE, scene, people, opts = {}) => {
   const BEVEL = 0.04;
   const GAP = 0.05;       // space between neighbouring pieces (m)
   const REST_Z = BEVEL + 0.005; // a seated piece's back sits on the plate's floor (z = 0)
-  const LIFT = 0.7;       // the pie's bottom edge hangs this far above the head
+  const LIFT = 1.2;       // the pie's bottom edge hangs this far above the heads
   const TILT = -0.32;     // the pie leans back from the camera a little, so its thickness shows
   const FLY = 0.3;        // seconds from a piece appearing to it hitting the slot
   const DROP_H = 1.5;     // how far in front of the plate it starts
+  const Y = (opts.height || 4) + LIFT + R;
 
   // ---------- materials ----------
   const std = (color, rough = 0.8) => new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: 0 });
@@ -737,40 +786,48 @@ const Pies = (THREE, scene, people, opts = {}) => {
     const grd = g.createLinearGradient(0, 0, 0, S);
     grd.addColorStop(0, '#C99358'); grd.addColorStop(0.5, '#D6A367'); grd.addColorStop(1, '#C48C51');
     g.fillStyle = grd; g.fillRect(0, 0, S, S);
-    // broad soft bands of lighter and darker wood
-    for (let k = 0; k < 14; k++) {
+    for (let k = 0; k < 14; k++) { // broad soft bands of lighter and darker wood
       const y = rr() * S, h = 8 + rr() * 30;
       g.globalAlpha = 0.12 + rr() * 0.12; g.fillStyle = rr() < 0.5 ? '#A86F3A' : '#E4B579';
       g.beginPath(); for (let x = 0; x <= S; x += 8) { const yy = y + Math.sin(x * 0.012 + k) * 10; x ? g.lineTo(x, yy) : g.moveTo(x, yy); }
       for (let x = S; x >= 0; x -= 8) g.lineTo(x, y + h + Math.sin(x * 0.012 + k) * 10);
       g.fill();
     }
-    // the grain: long, gently wavy lines, darker and lighter
-    for (let k = 0; k < 120; k++) {
+    for (let k = 0; k < 120; k++) { // the grain: long, gently wavy lines, darker and lighter
       const y = rr() * S, a = 2 + rr() * 6, f = 0.004 + rr() * 0.01, ph = rr() * 6, a2 = rr() * 2;
       g.globalAlpha = 0.18 + rr() * 0.35; g.strokeStyle = rr() < 0.75 ? '#8E5A2B' : '#EBC28A'; g.lineWidth = 0.6 + rr() * 2;
       g.beginPath(); for (let x = -4; x <= S + 4; x += 6) { const yy = y + Math.sin(x * f + ph) * a + Math.sin(x * 0.08 + ph) * a2; x > -4 ? g.lineTo(x, yy) : g.moveTo(x, yy); } g.stroke();
     }
-    // two knots, with grain rings round them
-    for (let n = 0; n < 2; n++) {
+    for (let n = 0; n < 2; n++) { // two knots, with grain rings round them
       const x = 80 + rr() * (S - 160), y = 80 + rr() * (S - 160);
       for (let r = 4; r < 34; r += 3.5) { g.globalAlpha = 0.35 - r / 120; g.strokeStyle = '#7A4A22'; g.lineWidth = 1.4; g.beginPath(); g.ellipse(x, y, r * 2.4, r * 0.9, 0, 0, Math.PI * 2); g.stroke(); }
       g.globalAlpha = 0.7; g.fillStyle = '#5E3818'; g.beginPath(); g.ellipse(x, y, 7, 3.5, 0, 0, Math.PI * 2); g.fill();
     }
-    // pores: tiny dark flecks along the grain
-    for (let k = 0; k < 1400; k++) { g.globalAlpha = 0.2 + rr() * 0.2; g.fillStyle = '#6E431F'; g.fillRect(rr() * S, rr() * S, 1 + rr() * 3, 0.8); }
+    for (let k = 0; k < 1400; k++) { g.globalAlpha = 0.2 + rr() * 0.2; g.fillStyle = '#6E431F'; g.fillRect(rr() * S, rr() * S, 1 + rr() * 3, 0.8); } // pores
     g.globalAlpha = 1;
     return c;
   })();
-  const woodTex = new THREE.CanvasTexture(wood);
-  woodTex.colorSpace = THREE.SRGBColorSpace; woodTex.wrapS = woodTex.wrapT = THREE.RepeatWrapping; woodTex.anisotropy = 8;
-  const bumpTex = new THREE.CanvasTexture(wood); bumpTex.wrapS = bumpTex.wrapT = THREE.RepeatWrapping;
-  // each piece: the grain turned to run out from the middle along it, and a slightly different wood tone
+  // painted wood: the same grain, pale, so a colour laid over it still shows the wood through the paint
+  const painted = (() => {
+    const c = document.createElement('canvas'); c.width = c.height = wood.width;
+    const g = c.getContext('2d'); g.drawImage(wood, 0, 0);
+    const im = g.getImageData(0, 0, c.width, c.height), d = im.data;
+    for (let i = 0; i < d.length; i += 4) { const l = (0.3 * d[i] + 0.59 * d[i + 1] + 0.11 * d[i + 2]) / 255, v = 255 * (0.62 + 0.42 * Math.min(1, l / 0.8)); d[i] = d[i + 1] = d[i + 2] = Math.min(255, v); }
+    g.putImageData(im, 0, 0);
+    return c;
+  })();
+  const tex = (canvas, srgb) => { const t = new THREE.CanvasTexture(canvas); if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 8; return t; };
+  const woodTex = tex(wood, true), paintTex = tex(painted, true), bumpTex = tex(wood, false);
+  // each piece: the grain turned to run out from the middle along it, and (plain wood) a slightly different tone
   const TONES = ['#FFFFFF', '#F4E6D6', '#FFF3E2', '#EADBC8', '#FFF8EE', '#F0DCC2'];
-  function woodMat(angle, k) {
-    const map = woodTex.clone(), bump = bumpTex.clone();
+  const mats = new Map();
+  function woodMat(n, k, e) {
+    const id = n + '|' + k + '|' + e; if (mats.has(id)) return mats.get(id);
+    const angle = slotAngles(n, k)[2], plain = e === 'indifference';
+    const map = (plain ? woodTex : paintTex).clone(), bump = bumpTex.clone();
     for (const t of [map, bump]) { t.repeat.set(0.55, 0.55); t.rotation = -angle; t.offset.set(k * 0.37, k * 0.21); t.needsUpdate = true; }
-    return new THREE.MeshStandardMaterial({ map, bumpMap: bump, bumpScale: 0.9, color: TONES[k % TONES.length], roughness: 0.55, metalness: 0 });
+    const m = new THREE.MeshStandardMaterial({ map, bumpMap: bump, bumpScale: 0.9, color: plain ? TONES[k % TONES.length] : EMO[e].color, roughness: plain ? 0.55 : 0.45, metalness: 0 });
+    mats.set(id, m); return m;
   }
   const chipMats = [std('#B98049', 0.6), std('#D9A86C', 0.6), std('#8E5A2B', 0.6)];
   const chipGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -783,12 +840,14 @@ const Pies = (THREE, scene, people, opts = {}) => {
   const rimGeo = new THREE.ExtrudeGeometry(rimShape, { depth: 0.14, bevelEnabled: true, bevelThickness: 0.035, bevelSize: 0.025, bevelSegments: 2, curveSegments: 64 });
   const hubGeo = new THREE.CylinderGeometry(HUB, HUB, 0.2, 24); hubGeo.rotateX(Math.PI / 2); hubGeo.translate(0, 0, 0.08);
   const backGeo = new THREE.CylinderGeometry(R * 0.98, R * 0.98, 0.04, 64); backGeo.rotateX(Math.PI / 2); backGeo.translate(0, 0, -0.24);
-  // slot k runs clockwise from the top: from angle a0 down to a1
-  const slotAngles = (n, k) => { const w = Math.PI * 2 / n, a0 = Math.PI / 2 - k * w; return [a0, a0 - w, a0 - w / 2]; };
+  // slot k runs clockwise from the top: from angle a0 down to a1 (m: its middle)
+  function slotAngles(n, k) { const w = Math.PI * 2 / n, a0 = Math.PI / 2 - k * w; return [a0, a0 - w, a0 - w / 2]; }
   const r0 = HUB + 0.06 + BEVEL, r1 = R - RIM - 0.05 - BEVEL;
   // a wedge filling one slot, with gaps to its neighbours and rounded (bevelled) edges, centred on its own centroid
-  // (so it squashes and turns about its middle); returns { geo, cx, cy }
+  // (so it squashes and turns about its middle)
+  const wedges = new Map();
   function wedge(n, k) {
+    const id = n + '|' + k; if (wedges.has(id)) return wedges.get(id);
     const [a0, a1, m] = slotAngles(n, k);
     const g0 = (GAP / 2 + BEVEL) / r0, g1 = (GAP / 2 + BEVEL) / r1; // the gap, as an angle at each end
     const s = new THREE.Shape();
@@ -801,32 +860,30 @@ const Pies = (THREE, scene, people, opts = {}) => {
     const th = a0 - a1, cr = (2 / 3) * (r1 ** 3 - r0 ** 3) / (r1 ** 2 - r0 ** 2) * Math.sin(th / 2) / (th / 2);
     const cx = cr * Math.cos(m), cy = cr * Math.sin(m);
     geo.translate(-cx, -cy, 0);
-    // the glint over its face: the same outline, flat
-    const flat = new THREE.ShapeGeometry(s, 20); flat.translate(-cx, -cy, DEPTH + BEVEL + 0.01);
-    return { geo, flat, cx, cy, m };
+    const flat = new THREE.ShapeGeometry(s, 20); flat.translate(-cx, -cy, DEPTH + BEVEL + 0.01); // the glint over its face
+    const w = { geo, flat, cx, cy, m }; wedges.set(id, w); return w;
   }
 
   // ---------- springs (a value pulled back to 0, overshooting a little) ----------
   const spring = (k, zeta) => ({ x: 0, v: 0, k, c: 2 * Math.sqrt(k) * zeta });
   function step(s, dt) { const n = Math.ceil(dt / (1 / 240)), h = dt / n; for (let i = 0; i < n; i++) { s.v += (-s.k * s.x - s.c * s.v) * h; s.x += s.v * h; } }
   const resting = (s) => Math.abs(s.x) < 1e-4 && Math.abs(s.v) < 1e-3;
-
   const ease = { outBack: (u) => 1 + 2.4 * (u - 1) ** 3 + 1.4 * (u - 1) ** 2, outCubic: (u) => 1 - (1 - u) ** 3, inCubic: (u) => u * u * u };
-  const emit = (type, pie, slot) => {
-    const detail = { type, character: pie.id, slot, n: pie.n };
+  const emit = (type, pie, slot, e) => {
+    const detail = { type, convo: pie.key, slot, n: pie.n, e };
     if (opts.onEvent) opts.onEvent(type, detail);
     window.dispatchEvent(new CustomEvent('agenda:pie', { detail }));
   };
 
-  // ---------- one pie per NPC ----------
+  // ---------- the pies ----------
   const tiltQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), TILT);
-  const pies = people.list.map((who) => {
-    const n = [6, 4, 5, 8, 3, 6, 7, 4][who.id % 8];
+  const pies = new Map();
+  function create(key, n, where) {
+    if (pies.has(key)) return;
     const holder = new THREE.Group(), pop = new THREE.Group(), inner = new THREE.Group();
     holder.add(pop); pop.add(inner);
-    holder.position.copy(who.group.position); holder.position.y = people.height + LIFT + R;
-    holder.visible = false; holder.name = 'pie:' + who.id;
-    const part = (geo, mat) => { const m = new THREE.Mesh(geo, mat); m.castShadow = true; m.receiveShadow = true; m.userData.who = who.id; inner.add(m); return m; };
+    const [x, z] = where(); holder.position.set(x, Y, z); holder.name = 'pie:' + key;
+    const part = (geo, mat) => { const m = new THREE.Mesh(geo, mat); m.castShadow = true; m.receiveShadow = true; inner.add(m); return m; };
     part(floorGeo, floorMat); part(rimGeo, lineMat); part(hubGeo, lineMat); part(backGeo, plateMat);
     for (let k = 0; k < n; k++) { // the spokes: thin raised ridges between the slots
       const a = slotAngles(n, k)[0], len = R - RIM - HUB, sp = part(new THREE.BoxGeometry(len, 0.05, 0.12), lineMat);
@@ -834,34 +891,32 @@ const Pies = (THREE, scene, people, opts = {}) => {
     }
     const pieces = [];
     for (let k = 0; k < n; k++) {
-      const w = wedge(n, k), mesh = new THREE.Mesh(w.geo, woodMat(w.m, who.id * 3 + k));
-      mesh.castShadow = true; mesh.receiveShadow = true; mesh.visible = false; mesh.userData.who = who.id;
+      const w = wedge(n, k), mesh = new THREE.Mesh(w.geo, woodMat(n, k, 'indifference'));
+      mesh.castShadow = true; mesh.receiveShadow = true; mesh.visible = false;
       const glint = new THREE.Mesh(w.flat, new THREE.MeshBasicMaterial({ color: '#FFF6E0', transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
-      glint.userData.who = who.id; mesh.add(glint);
-      inner.add(mesh);
-      pieces.push({ k, mesh, glint, cx: w.cx, cy: w.cy, m: w.m, state: 'empty', t: 0, z: spring(1500, 0.2), sq: spring(1100, 0.18), bump: null, flash: 0 });
+      mesh.add(glint); inner.add(mesh);
+      pieces.push({ k, mesh, glint, cx: w.cx, cy: w.cy, m: w.m, e: null, state: 'empty', t: 0, z: spring(1500, 0.2), sq: spring(1100, 0.18), bump: null, flash: 0 });
     }
     scene.add(holder);
-    return { id: who.id, owner: who.group, n, holder, pop, inner, pieces, filled: 0, shown: false, popT: 1, popDir: 0,
-      s: spring(240, 0.26), tx: spring(200, 0.24), ty: spring(200, 0.24), chips: [], finale: -1, off: [0, 0], offNow: [0, 0] };
-  });
-
-  // ---------- the moves ----------
-  function show(id) { const p = pies[id]; if (!p || p.shown) return; p.shown = true; p.holder.visible = true; p.popDir = 1; p.popT = 0; emit('show', p); }
-  function hide(id) { const p = pies[id]; if (!p || !p.shown) return; p.shown = false; p.popDir = -1; p.popT = 0; emit('hide', p); }
-  function add(id) {
-    const p = pies[id]; if (!p) return;
-    if (!p.shown) { show(id); return; }
-    if (p.filled >= p.n) { clear(id); return; }
-    const pc = p.pieces[p.filled++];
-    pc.state = 'fly'; pc.t = 0; pc.mesh.visible = true; pc.bump = null;
-    emit('drop', p, pc.k);
+    const p = { key, n, where, holder, pop, inner, pieces, shown: true, popT: 0, popDir: 1, dead: false,
+      s: spring(240, 0.26), tx: spring(200, 0.24), ty: spring(200, 0.24), chips: [], finale: -1 };
+    pies.set(key, p); emit('show', p);
   }
-  function clear(id) {
-    const p = pies[id]; if (!p) return;
-    p.pieces.forEach((pc, i) => { if (pc.state === 'empty') return; pc.state = 'out'; pc.t = -0.035 * (p.filled - 1 - i); });
-    p.filled = 0; p.finale = -1;
-    emit('clear', p);
+  function destroy(key) { const p = pies.get(key); if (!p || p.dead) return; p.dead = true; p.shown = false; p.popDir = -1; p.popT = 0; emit('hide', p); }
+  const filled = (p) => p.pieces.filter((pc) => pc.state === 'fly' || pc.state === 'seated').length;
+  function put(key, slot, e) {
+    const p = pies.get(key); if (!p || p.dead) return;
+    const pc = p.pieces[slot]; if (!pc) return;
+    pc.e = e; pc.mesh.material = woodMat(p.n, slot, e);
+    pc.state = 'fly'; pc.t = 0; pc.mesh.visible = true; pc.bump = null; pc.z.x = pc.z.v = pc.sq.x = pc.sq.v = 0;
+    emit('drop', p, slot, e);
+  }
+  function take(key, slot) {
+    const p = pies.get(key); if (!p || p.dead) return;
+    const pc = p.pieces[slot]; if (!pc || pc.state === 'empty' || pc.state === 'out') return;
+    pc.state = 'out'; pc.t = 0; p.finale = -1;
+    p.s.v += 0.6; // the plate lifts a little as the piece comes out
+    emit('take', p, slot, pc.e);
   }
 
   // the impact of piece pc in pie p
@@ -873,14 +928,12 @@ const Pies = (THREE, scene, people, opts = {}) => {
     const dx = Math.cos(pc.m), dy = Math.sin(pc.m);
     p.s.v -= 1.6;                       // the plate dips...
     p.tx.v += -dy * 1.5; p.ty.v += dx * 1.5; // ...and tilts away on the side that was hit
-    // the pieces already in: a ripple running round from the impact
-    for (const o of p.pieces) {
+    for (const o of p.pieces) { // the pieces already in: a ripple running round from the impact
       if (o === pc || o.state !== 'seated') continue;
       const d = Math.min(Math.abs(o.k - pc.k), p.n - Math.abs(o.k - pc.k));
       o.bump = { t: -0.03 * d, h: 0.07 / d };
     }
-    // wood chips out of the joint: from the outer edge and the two sides
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < 7; i++) { // wood chips out of the joint: from the outer edge and the two sides
       const side = i % 3, w = Math.PI * 2 / p.n, a = pc.m + (side === 0 ? (Math.random() - 0.5) * w * 0.8 : (side === 1 ? 0.5 : -0.5) * w);
       const r = side === 0 ? r1 + 0.05 : r0 + Math.random() * (r1 - r0);
       const c = new THREE.Mesh(chipGeo, chipMats[i % 3]), s = 0.08 + Math.random() * 0.08;
@@ -891,35 +944,33 @@ const Pies = (THREE, scene, people, opts = {}) => {
       c.userData.chip = { v: new THREE.Vector3(vx + (Math.random() - 0.5), vy + (Math.random() - 0.5) + 1.2, 1.5 + Math.random() * 1.5), spin: new THREE.Vector3(Math.random() * 20, Math.random() * 20, Math.random() * 20), life: 0, s };
       p.inner.add(c); p.chips.push(c);
     }
-    emit('snap', p, pc.k);
-    if (p.filled === p.n && p.pieces.every((o) => o.state === 'seated')) { p.finale = 0.14; emit('full', p); }
+    emit('snap', p, pc.k, pc.e);
+    if (p.pieces.every((o) => o.state === 'seated')) { p.finale = 0.14; emit('full', p); }
   }
 
   const tangent = new THREE.Vector3(), qa = new THREE.Quaternion(), qb = new THREE.Quaternion(), zAxis = new THREE.Vector3(0, 0, 1);
   function update(dt, camera) {
-    for (const p of pies) {
-      if (!p.holder.visible) continue;
+    for (const p of pies.values()) {
       p.holder.quaternion.copy(camera.quaternion).multiply(tiltQ);
-      // over its owner's head, pushed out by its offset (so the pies of people standing close don't pile up), easing there
-      for (const k of [0, 1]) { const d = p.off[k] - p.offNow[k]; p.offNow[k] = Math.abs(d) < 0.01 ? p.off[k] : p.offNow[k] + d * Math.min(1, dt * 6); }
-      p.holder.position.x = p.owner.position.x + p.offNow[0]; p.holder.position.z = p.owner.position.z + p.offNow[1];
-      // popping up (or away)
-      if (p.popDir) {
+      // over the conversation's middle, easing there as it moves
+      const [x, z] = p.dead ? [p.holder.position.x, p.holder.position.z] : p.where(), k = Math.min(1, dt * 6);
+      p.holder.position.x += (x - p.holder.position.x) * k; p.holder.position.z += (z - p.holder.position.z) * k;
+      if (p.popDir) { // popping up (or away)
         p.popT = Math.min(1, p.popT + dt / (p.popDir > 0 ? 0.38 : 0.22));
         const e = p.popDir > 0 ? ease.outBack(p.popT) : 1 - ease.inCubic(p.popT);
         p.pop.scale.setScalar(Math.max(0.001, e)); p.pop.rotation.z = (1 - e) * 0.5; p.pop.position.y = (1 - e) * -R * 0.6;
-        if (p.popT >= 1) { if (p.popDir < 0) p.holder.visible = false; p.popDir = 0; }
+        if (p.popT >= 1) {
+          if (p.popDir < 0) { scene.remove(p.holder); p.holder.traverse((m) => { if (m.isMesh && m.geometry.type === 'BoxGeometry' && m.geometry !== chipGeo) m.geometry.dispose(); }); pies.delete(p.key); continue; }
+          p.popDir = 0;
+        }
       }
-      // the plate's own springs
-      for (const s of [p.s, p.tx, p.ty]) step(s, dt);
+      for (const s of [p.s, p.tx, p.ty]) step(s, dt); // the plate's own springs
       p.inner.scale.setScalar(1 + p.s.x * 0.12);
       p.inner.rotation.set(p.tx.x * 0.25, p.ty.x * 0.25, 0);
-      // the full pie: one wave round, then a pop
-      if (p.finale >= 0) {
+      if (p.finale >= 0) { // the full pie: one wave round, then a pop
         p.finale -= dt;
         if (p.finale < 0) { p.pieces.forEach((o, i) => { o.bump = { t: -0.045 * i, h: 0.13 }; }); p.s.v += 2.4; p.finale = -1; }
       }
-      // the pieces
       for (const pc of p.pieces) {
         const mesh = pc.mesh;
         if (pc.state === 'empty') continue;
@@ -931,10 +982,10 @@ const Pies = (THREE, scene, people, opts = {}) => {
           off = 0.55 * back; twist = 0.75 * back; tilt = 0.55 * back;
           sc = 0.55 + 0.45 * ease.outCubic(Math.min(1, u * 1.7));
           if (u >= 1) snap(p, pc);
-        } else if (pc.state === 'out') {
+        } else if (pc.state === 'out') { // lifted out: up, outward and away
           pc.t += dt;
-          const u = Math.max(0, Math.min(1, pc.t / 0.22));
-          z += 0.9 * ease.outCubic(u); sc = Math.max(0.001, 1 - ease.inCubic(u)); twist = -0.6 * u;
+          const u = Math.max(0, Math.min(1, pc.t / 0.3));
+          z += 1.2 * ease.outCubic(u); off = 0.9 * ease.outCubic(u); sc = Math.max(0.001, 1 - ease.inCubic(u)); twist = -0.6 * u;
           if (u >= 1) { pc.state = 'empty'; mesh.visible = false; continue; }
         }
         if (pc.state === 'seated') {
@@ -951,28 +1002,24 @@ const Pies = (THREE, scene, people, opts = {}) => {
         tangent.set(-dy, dx, 0);
         mesh.quaternion.copy(qa.setFromAxisAngle(zAxis, twist)).multiply(qb.setFromAxisAngle(tangent, -tilt));
         mesh.scale.set(sc, sc, sc * sz);
-        // the glint: bright at the snap, gone in a quarter second
-        if (pc.flash > 0) { pc.flash = Math.max(0, pc.flash - dt / 0.26); pc.glint.material.opacity = 0.55 * pc.flash ** 2; }
+        if (pc.flash > 0) { pc.flash = Math.max(0, pc.flash - dt / 0.26); pc.glint.material.opacity = 0.55 * pc.flash ** 2; } // the glint
       }
-      // the chips: thrown out, falling (down on the screen), spinning, shrinking away
-      for (let i = p.chips.length - 1; i >= 0; i--) {
+      for (let i = p.chips.length - 1; i >= 0; i--) { // the chips: thrown out, falling, spinning, shrinking away
         const c = p.chips[i], d = c.userData.chip;
         d.life += dt; d.v.y -= 14 * dt; d.v.multiplyScalar(1 - 1.5 * dt);
         c.position.addScaledVector(d.v, dt);
         c.rotation.x += d.spin.x * dt; c.rotation.y += d.spin.y * dt; c.rotation.z += d.spin.z * dt;
-        const k = Math.max(0, 1 - Math.max(0, d.life - 0.25) / 0.25);
-        c.scale.set(d.s * k, d.s * 0.6 * k, d.s * 0.4 * k);
+        const q = Math.max(0, 1 - Math.max(0, d.life - 0.25) / 0.25);
+        c.scale.set(d.s * q, d.s * 0.6 * q, d.s * 0.4 * q);
         if (d.life > 0.5) { p.inner.remove(c); p.chips.splice(i, 1); }
       }
     }
   }
-  const busy = () => pies.some((p) => p.holder.visible && (p.popDir || p.off[0] !== p.offNow[0] || p.off[1] !== p.offNow[1] || p.chips.length || p.finale >= 0 || ![p.s, p.tx, p.ty].every(resting)
-    || p.pieces.some((pc) => pc.state === 'fly' || pc.state === 'out' || pc.bump || pc.flash > 0 || (pc.state === 'seated' && !(resting(pc.z) && resting(pc.sq))))));
-  const targets = () => pies.filter((p) => p.holder.visible).map((p) => p.holder);
-  // offset(id, dx, dz): hold the pie that far (m) from over its owner's head
-  const offset = (id, dx, dz) => { pies[id].off = [dx, dz]; };
-  const state = (id) => ({ filled: pies[id].filled, n: pies[id].n, shown: pies[id].shown });
-  return { show, hide, add, clear, update, busy, targets, state, offset, list: pies };
+  const moving = (p) => { const [x, z] = p.dead ? [0, 0] : p.where(); return !p.dead && Math.hypot(x - p.holder.position.x, z - p.holder.position.z) > 0.01; };
+  const busy = () => [...pies.values()].some((p) => p.popDir || moving(p) || p.chips.length || p.finale >= 0 || ![p.s, p.tx, p.ty].every(resting)
+    || p.pieces.some((pc) => pc.state === 'fly' || pc.state === 'out' || pc.bump || pc.flash > 0 || (pc.state === 'seated' && !(resting(pc.z) && resting(pc.sq)))));
+  const state = (key) => { const p = pies.get(key); return p ? { n: p.n, filled: filled(p), shown: p.shown } : null; };
+  return { create, destroy, put, take, update, busy, state, list: pies };
 };
 
 // ===== Walking: the players move their figures tile to tile, and see their own figure and plan marked =====
@@ -988,6 +1035,11 @@ const Pies = (THREE, scene, people, opts = {}) => {
 //   setMe(player)         whose view this is (0 or 1): only that player's figure gets the circle under it, and only that
 //                         player's planned path is drawn. The other player's figure looks like any NPC.
 //   update(dt), busy()    once per drawn frame; busy while anyone walks
+//   inReach(id, col, row)  is that tile within REACH tiles of where the figure is now (8 directions, so a 7 x 7 square)
+//   preview(col, row)     mark where your queued walk goes (null clears it); it starts on the next tick
+// Nobody walks more than REACH tiles at a time: a longer route is cut after REACH steps (moveTo then returns 'leg',
+// and a seat at the far end isn't taken yet). The player has to steer leg by leg, and the NPCs walk the same way, so
+// how far someone goes in one go gives nothing away. The player sees their reach as a square on the floor.
 // Everyone walks at SPEED: NML's move speed 2 (metres a second; the Flame Wizard's), so a tile takes 3 s.
 // The path is a smooth curve through the tiles' middles; the arrow on the ground is that same curve, from the figure to
 // the end, shrinking as it walks.
@@ -1000,6 +1052,7 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   const ARROW_W = 0.9;      // the path arrow's width (m)
   const HEAD_L = 1.9, HEAD_W = 2.4; // its head
   const MINE = '#F2D16B';   // your marks: the circle, the arrow, the destination
+  const REACH = 3;          // tiles: the furthest anyone walks in one go
   const T = board.tile;
   let me = opts.me || 0;
 
@@ -1016,6 +1069,23 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   const sq = (T / 2 - 0.35) * Math.SQRT2;
   const dest = new THREE.Mesh(new THREE.RingGeometry(sq - 0.3, sq, 4, 1, Math.PI / 4), markMat(0.9));
   dest.rotation.x = -Math.PI / 2; dest.position.y = 0.05; dest.renderOrder = 2; dest.visible = false; scene.add(dest);
+  let pending = false; // a walk is queued for the next tick: its destination stays marked until it starts
+  // your reach: a faint square round the tiles you can walk to in one go
+  const reachMat = markMat(0.5), reachFill = markMat(0.05);
+  const reach = new THREE.Group(), reachLine = new THREE.Mesh(new THREE.BufferGeometry(), reachMat), reachIn = new THREE.Mesh(new THREE.BufferGeometry(), reachFill);
+  for (const m of [reachLine, reachIn]) { m.rotation.x = -Math.PI / 2; m.renderOrder = 1; reach.add(m); }
+  reach.position.y = 0.045; scene.add(reach);
+  let reachAt = '';
+  function drawReach(t) {
+    const k = t.col + ',' + t.row; if (k === reachAt) return; reachAt = k;
+    const c0 = Math.max(0, t.col - REACH), c1 = Math.min(board.cols - 1, t.col + REACH), r0_ = Math.max(0, t.row - REACH), r1_ = Math.min(board.rows - 1, t.row + REACH);
+    const BW = board.cols * T, BD = board.rows * T, x0 = c0 * T - BW / 2 + 0.2, x1 = (c1 + 1) * T - BW / 2 - 0.2, z0 = r0_ * T - BD / 2 + 0.2, z1 = (r1_ + 1) * T - BD / 2 - 0.2, w = 0.22;
+    // (drawn in x, -z: laid flat by a quarter turn round x)
+    const rect = (a0, a1, b0, b1, p) => { p.moveTo(a0, b0); p.lineTo(a1, b0); p.lineTo(a1, b1); p.lineTo(a0, b1); p.lineTo(a0, b0); return p; };
+    const outer = rect(x0, x1, -z1, -z0, new THREE.Shape()); outer.holes.push(rect(x0 + w, x1 - w, -z1 + w, -z0 - w, new THREE.Path()));
+    reachLine.geometry.dispose(); reachLine.geometry = new THREE.ShapeGeometry(outer);
+    reachIn.geometry.dispose(); reachIn.geometry = new THREE.ShapeGeometry(rect(x0 + w, x1 - w, -z1 + w, -z0 - w, new THREE.Shape()));
+  }
 
   // ---------- paths over the tiles ----------
   const key = (c, r) => c + ',' + r;
@@ -1083,8 +1153,13 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
     if (!seat && blocked.has(key(col, row))) to = nearestFree(col, row, blocked, from);
     if (!to) return false;
     blocked.delete(key(from.col, from.row));
-    const tiles = path(from, to, blocked);
+    let tiles = path(from, to, blocked);
     if (!tiles) return false;
+    let full = true;
+    if (tiles.length - 1 > REACH) { // too far for one go: walk the first REACH steps of the way
+      tiles = tiles.slice(0, REACH + 1); full = false; seat = null;
+      const [c, r] = tiles[tiles.length - 1]; to = { col: c, row: r };
+    }
     release(who); who.faceAt = null; who.spot = null;
     if (seat) { seat.by = id; who.seat = seat; }
     // from where the figure is now, through the middles of the tiles after the one it's on, pulled straight: a corner
@@ -1098,13 +1173,17 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
       at = mids[j]; pts.push(new THREE.Vector3(at[0], 0, at[1])); i = j + 1;
     }
     if (seat) pts[pts.length - 1].set(seat.x, 0, seat.z); // a seat's place isn't the tile's middle: it's pulled to its table
-    if (pts[0].distanceTo(pts[pts.length - 1]) < 0.05) { walks.delete(id); who.col = to.col; who.row = to.row; if (seat) who.seated = true; return true; }
+    if (who.player === me) pending = false;
+    if (pts[0].distanceTo(pts[pts.length - 1]) < 0.05) { walks.delete(id); who.col = to.col; who.row = to.row; if (seat) who.seated = true; return full || 'leg'; }
     const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
     walks.set(id, { curve, len: curve.getLength(), s: 0 });
     who.col = to.col; who.row = to.row;
     if (who.player === me) markDest(to);
-    return true;
+    return full || 'leg';
   }
+  const posTile = (id) => { const g = people.list[id].group.position; return people.tileOf(g.x, g.z); };
+  function inReach(id, col, row) { const t = posTile(id); return !!t && Math.max(Math.abs(t.col - col), Math.abs(t.row - row)) <= REACH; }
+  function preview(col, row) { if (col == null) { pending = false; return; } pending = true; markDest({ col, row }); }
   function sit(id, s) { return !!s && moveTo(id, s.col, s.row, s); }
   function leave(id) {
     const who = people.list[id], blocked = taken(id), t = people.tileOf(who.group.position.x, who.group.position.z);
@@ -1171,9 +1250,10 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
     const mine = people.list.find((p) => p.player === me);
     ring.position.x = mine.group.position.x; ring.position.z = mine.group.position.z;
     const w = walks.get(mine.id);
-    if (w) drawArrow(w); else { arrow.visible = false; dest.visible = false; }
+    if (w) drawArrow(w); else { arrow.visible = false; dest.visible = pending; }
+    drawReach(posTile(mine.id) || mine);
   }
-  function setMe(p) { me = p; const w = walks.get(people.list.find((q) => q.player === me).id); dest.visible = false; if (w) { const who = people.list.find((q) => q.player === me); markDest(who); } }
+  function setMe(p) { me = p; pending = false; reachAt = ''; const w = walks.get(people.list.find((q) => q.player === me).id); dest.visible = false; if (w) { const who = people.list.find((q) => q.player === me); markDest(who); } }
   const off = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
   // face(id, x, z): standing still, turn to look at that point (someone you talk to, the middle of a group)
   function face(id, x, z) { const who = people.list[id]; who.faceAt = [x, z]; }
@@ -1182,15 +1262,17 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
     || (!w.seated && w.faceAt && !walks.has(w.id) && off(faceYaw(w), w.group.rotation.y) > 0.01)
     || (!w.seated && w.spot && !walks.has(w.id) && Math.hypot(w.spot[0] - w.group.position.x, w.spot[1] - w.group.position.z) > 0.005)
     || w.pose !== (w.seated && w.seat.pose === 'sit' ? 1 : 0));
-  return { moveTo, sit, leave, face, stand, setMe, update, busy: () => walks.size > 0 || settling(), walking: (id) => walks.has(id), me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
+  return { moveTo, sit, leave, face, stand, setMe, update, inReach, preview, REACH, busy: () => walks.size > 0 || settling(), walking: (id) => walks.has(id), me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
 };
 
-// ===== The party's social life: who talks to whom, in what mood, and what they share =====
+// ===== The party's social life: who talks to whom, in what mood, and the emotions they give and take =====
 // Social(people, furniture, moves, pies, match, board, hooks) runs every NPC's choices and every conversation.
+// It works in ticks (src/world.js calls tick(dt) every TICK_S seconds): everything anyone decides or does happens on
+// a tick, at the same moment for everyone. Only the walking itself and the animations run between ticks.
 //
 // NPC types (dealt from the match seed, 5 of each among the 20 NPCs; players have no type: they act as they like):
 //   type 1, social 0: never seeks a conversation; the first time anyone asks in a match it declines, then won't talk
-//                     for 15 s; after that it accepts. In a conversation it never adds anything.
+//                     for 15 s; after that it accepts. It only takes, never gives.
 //   type 2, social 1: never seeks a conversation; always accepts.
 //   type 3, social 2: sometimes seeks a conversation; always accepts.
 //   type 4, social 3: constantly seeks a conversation; always accepts. Inviting: it brings others into its conversation
@@ -1200,31 +1282,69 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
 //   standing: 2 people (a 1v1) or 3 talking, standing on neighbouring tiles facing their middle. Anyone who joins a
 //             group of 3 talking only listens. Interacting with a talker in a group you only listen to may make each
 //             of them peeved or irritated; doing it again pulls that one aside for a 1v1 (rolling again), unless they
-//             are irritated. Peeved (10 s): acts normally but is reluctant (adds at half speed) and can't be peeved
+//             are irritated. Peeved (10 s): acts normally but is reluctant (acts half as often) and can't be peeved
 //             again, only irritated (likelier). Irritated (10 s): can't be pulled away. The higher the social level,
 //             the likelier both.
 //   at furniture: everyone seated at the same table or bar (or standing at the same standing table) talks together.
-// Sharing: every talker who adds to the conversation fills their own pie (shown over them while they're in one), one
-// piece every SHARE_S seconds, half as fast while reluctant. Type 1 and listeners don't fill theirs.
+//
+// Emotions (src/emotions.js): indifference, happiness, anger, doubt, anxiety, sadness, each a wooden piece.
+//   Personal chart: everyone starts with 2 indifference and 1 other emotion (their starting emotion). Starting pieces
+//     never leave the chart. Pieces taken from conversations are added to it (up to CAP pieces in all).
+//   Roles: some give and take, some only give, some only take (every type 1 only takes; GIVE_ONLY of the others only
+//     give). The players give and take.
+//   Conversation chart: one shared pie per conversation, SLOTS slots. On a tick each member may act (likelier the more
+//     social, half as likely while reluctant). One action gives and takes together, 0 to 3 of each. Giving puts pieces
+//     from the personal chart into empty slots: pieces taken earlier go first (they move over); after that a starting
+//     piece is picked at random and a copy of it goes in (the share of each emotion is the chance). Taking lifts
+//     pieces out of the conversation chart into the personal chart, at random for now (later: by what they want);
+//     when several take on the same tick, the pieces are dealt out between them (split). Listeners only take, at most
+//     1. Everything on a tick happens at once: takes come out of what was there, gives go into slots that were empty.
+//   The bar: anyone seated there turns one indifference piece into their starting emotion every BAR_TICKS ticks
+//     (taken pieces first, then starting ones).
+//   What a player can see: another person's chart starts as grey pieces with question marks. While you're in a
+//     conversation with them you see what they give and take (those pieces show), and every REVEAL_TICKS ticks one more
+//     of their pieces. Whether they give, take or both shows after ROLE_TICKS ticks together.
 //
 // hooks: me() -> my figure's id; askPlayer(fromId, kind ('talk' or 'invite'), answer(ok)) when an NPC asks you;
 // toast(text) for what happened when you acted; onChange() when anything visible changed.
-// Calls: update(dt) every frame; options(meId, targetId) -> { info, label, disabled, act } for the popup over a person;
-// playerMoved(id) when a player walks off on their own; debug(id) -> a line for the dev labels.
+// Calls: tick(dt) on every tick; options(meId, targetId) -> { info, label, disabled, act } for the popup over a person;
+// playerMoved(id) when a player walks off on their own; debug(id) -> a line for the dev labels;
+// chart(viewerPlayer, id) -> what that player can see of id's personal chart.
 const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
-  const SHARE_S = 5;        // a talker fills a pie piece this often
   const MOOD_S = 10;        // peeved, irritated and reluctant last this long
   const SHY_COOLDOWN = 15;  // a type 1 won't talk for this long after its first refusal
   const ASK_S = 8;          // a player who doesn't answer an NPC within this long has said no
+  const SLOTS = 8;          // slots in a conversation chart
+  const CAP = 12;           // pieces a personal chart holds at most
+  const GIVE_ONLY = 4;      // NPCs of types 2 to 4 who only give
+  const BAR_TICKS = 3, REVEAL_TICKS = 3, ROLE_TICKS = 2;
+  // how likely each acts on a tick, and how many pieces (0, 1, 2 or 3) an action gives or takes, by type ('p': players)
+  const ACT = { 1: 0.35, 2: 0.35, 3: 0.45, 4: 0.55, p: 0.45 };
+  const AMOUNT = { 1: [0.25, 0.5, 0.2, 0.05], 2: [0.25, 0.5, 0.2, 0.05], 3: [0.1, 0.4, 0.35, 0.15], 4: [0.05, 0.3, 0.4, 0.25], p: [0.1, 0.4, 0.35, 0.15] };
   const rr = match.rng, L = people.list, key = (c, r) => c + ',' + r;
   const npcs = L.filter((p) => p.player === null);
   const deck = npcs.map((_, i) => 1 + (i % 4));
-  for (let i = deck.length - 1; i > 0; i--) { const j = Math.floor(rr() * (i + 1)); [deck[i], deck[j]] = [deck[j], deck[i]]; }
-  const S = L.map((p) => ({ id: p.id, type: p.player === null ? deck[npcs.indexOf(p)] : null, convo: null, role: null, share: 0,
+  const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rr() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+  shuffle(deck);
+  const S = L.map((p) => ({ id: p.id, type: p.player === null ? deck[npcs.indexOf(p)] : null, convo: null, role: null,
     peeved: 0, irritated: 0, reluctant: 0, declinedOnce: false, cooldown: 0, intent: null, stay: 0,
-    wait: p.player === null ? 1 + rr() * 8 : 0, nudges: new Map() }));
+    wait: p.player === null ? 1 + rr() * 8 : 0, nudges: new Map(), bar: 0 }));
   const convos = new Map(); let nextId = 1;
   const changed = () => hooks.onChange && hooks.onChange();
+
+  // ---------- personal charts ----------
+  let uid = 1;
+  const piece = (e, start = false) => ({ uid: uid++, e, start });
+  const OTHERS = EMOTIONS.map((e) => e.key).filter((k) => k !== 'indifference');
+  const giveOnly = new Set(shuffle(S.filter((s) => s.type != null && s.type !== 1).map((s) => s.id)).slice(0, GIVE_ONLY));
+  const P = L.map((p) => {
+    const base = OTHERS[Math.floor(rr() * OTHERS.length)], s = S[p.id];
+    return { base, gives: s.type !== 1, takes: !giveOnly.has(p.id), pieces: [piece('indifference', true), piece('indifference', true), piece(base, true)] };
+  });
+  // what each player has seen: per player, per person, the pieces seen and the ticks spent together
+  const seen = [0, 1].map(() => L.map(() => ({ pieces: new Set(), ticks: 0, role: false })));
+  const playerOf = (id) => L[id].player;
+  const reveal = (p, id, pc) => { if (pc) seen[p][id].pieces.add(pc.uid); };
 
   // ---------- where people are ----------
   const pos = (id) => L[id].group.position;
@@ -1250,6 +1370,7 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
     }
     return best;
   }
+  // (walks there, or the next leg of the way: nobody walks more than moves.REACH tiles in one go)
   const goTo = (id, t) => (L[id].col === t.col && L[id].row === t.row && atRest(id)) || moves.moveTo(id, t.col, t.row);
   function wander(id, reach) {
     for (let k = 0; k < 20; k++) {
@@ -1270,34 +1391,33 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
     if (s.convo && s.convo !== cv.id) leave(id);
     (role === 'talk' ? cv.talkers : cv.listeners).add(id);
     s.convo = cv.id; s.role = role; s.stay = stayFor(id, cv.kind); s.nudges.clear();
-    if (role === 'talk') pies.show(id);
+  }
+  function open(cv) { // its shared chart, and the pie that shows it
+    cv.chart = Array(SLOTS).fill(null);
+    pies.create(cv.id, SLOTS, () => cv.kind === 'stand' ? cv.mid : furniture.middle(furniture.list[cv.furniture]));
   }
   // a standing conversation's circle: its middle is the middle of the talkers' tiles; the talkers step in to evenly
   // spaced places round it (a 1v1 face to face, a group of 3 in a triangle), listeners to a wider ring outside them.
   // Their tiles stay their places for walking and blocking; only the bodies move in.
   const RING = { 2: 1.6, 3: 2.0 }, LISTEN_OUT = 2.8;
-  const PIE_OUT = { 2: 1.6, 3: 2.3 }; // how far each talker's pie leans out from the middle
   function arrange(cv) {
     if (cv.kind !== 'stand') return;
     const tc = (id) => people.centre(L[id].col, L[id].row), ts = [...cv.talkers], n = ts.length;
     const cx = ts.reduce((a, id) => a + tc(id)[0], 0) / n, cz = ts.reduce((a, id) => a + tc(id)[1], 0) / n, R = RING[n] || 2.2;
+    cv.mid = [cx, cz];
     // in order round the middle, then evenly spaced, turned to sit closest to where each one already is
     const order = ts.map((id) => ({ id, a: Math.atan2(tc(id)[1] - cz, tc(id)[0] - cx) })).sort((a, b) => a.a - b.a);
     let sx = 0, sy = 0; order.forEach((o, i) => { const d = o.a - i * 2 * Math.PI / n; sx += Math.cos(d); sy += Math.sin(d); });
     const base = Math.atan2(sy, sx);
-    order.forEach((o, i) => {
-      const a = base + i * 2 * Math.PI / n;
-      moves.stand(o.id, cx + Math.cos(a) * R, cz + Math.sin(a) * R, cx, cz);
-      pies.offset(o.id, Math.cos(a) * PIE_OUT[n], Math.sin(a) * PIE_OUT[n]); pies.show(o.id); // pies fan out from the middle
-    });
-    for (const id of cv.listeners) { const [x, z] = tc(id), a = Math.atan2(z - cz, x - cx); moves.stand(id, cx + Math.cos(a) * (R + LISTEN_OUT), cz + Math.sin(a) * (R + LISTEN_OUT), cx, cz); pies.hide(id); } // listeners share nothing: no pie
+    order.forEach((o, i) => { const a = base + i * 2 * Math.PI / n; moves.stand(o.id, cx + Math.cos(a) * R, cz + Math.sin(a) * R, cx, cz); });
+    for (const id of cv.listeners) { const [x, z] = tc(id), a = Math.atan2(z - cz, x - cx); moves.stand(id, cx + Math.cos(a) * (R + LISTEN_OUT), cz + Math.sin(a) * (R + LISTEN_OUT), cx, cz); }
   }
   // out of a conversation and standing still: back to the middle of its own tile
   const stepBack = (id) => { if (!L[id].seat && !moves.walking(id)) { const [x, z] = people.centre(L[id].col, L[id].row); moves.stand(id, x, z); } else L[id].faceAt = null; };
   function startConvo(a, b) {
     for (const id of [a, b]) if (S[id].convo) leave(id);
     const cv = { id: nextId++, kind: 'stand', talkers: new Set(), listeners: new Set() };
-    convos.set(cv.id, cv); enter(cv, a, 'talk'); enter(cv, b, 'talk'); arrange(cv); changed();
+    convos.set(cv.id, cv); enter(cv, a, 'talk'); enter(cv, b, 'talk'); arrange(cv); open(cv); changed();
     return cv;
   }
   function join(cv, id) {
@@ -1306,15 +1426,14 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
   }
   function leave(id) {
     const s = S[id], cv = convos.get(s.convo);
-    s.convo = null; s.role = null; s.nudges.clear(); stepBack(id); pies.offset(id, 0, 0);
-    pies.hide(id);
+    s.convo = null; s.role = null; s.nudges.clear(); stepBack(id);
     if (!cv) return;
     cv.talkers.delete(id); cv.listeners.delete(id);
     // a group that loses a talker: a listener steps in
     while (cv.kind === 'stand' && cv.talkers.size < 3 && cv.listeners.size) { const q = cv.listeners.values().next().value; cv.listeners.delete(q); cv.talkers.add(q); S[q].role = 'talk'; }
-    if (cv.talkers.size < 2) { // too few left to talk: it's over
-      convos.delete(cv.id);
-      for (const q of [...cv.talkers, ...cv.listeners]) { S[q].convo = null; S[q].role = null; S[q].nudges.clear(); stepBack(q); pies.offset(q, 0, 0); pies.hide(q); }
+    if (cv.talkers.size < 2) { // too few left to talk: it's over, and its chart with it
+      convos.delete(cv.id); pies.destroy(cv.id);
+      for (const q of [...cv.talkers, ...cv.listeners]) { S[q].convo = null; S[q].role = null; S[q].nudges.clear(); stepBack(q); }
     } else arrange(cv);
     changed();
   }
@@ -1324,11 +1443,87 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
       const here = L.filter((p) => p.seated && p.seat && p.seat.furniture === f.id && atRest(p.id)).map((p) => p.id);
       let cv = [...convos.values()].find((c) => c.kind === 'poi' && c.furniture === f.id);
       if (here.length >= 2) {
-        if (!cv) { cv = { id: nextId++, kind: 'poi', furniture: f.id, talkers: new Set(), listeners: new Set() }; convos.set(cv.id, cv); }
+        if (!cv) { cv = { id: nextId++, kind: 'poi', furniture: f.id, talkers: new Set(), listeners: new Set() }; convos.set(cv.id, cv); open(cv); }
         for (const id of here) if (!cv.talkers.has(id)) { enter(cv, id, 'talk'); changed(); }
         for (const id of [...cv.talkers]) if (!here.includes(id)) leave(id);
       } else if (cv) for (const id of [...cv.talkers]) leave(id);
     }
+  }
+
+  // ---------- giving and taking ----------
+  const kind = (id) => S[id].type == null ? 'p' : S[id].type;
+  const amount = (id) => { const w = AMOUNT[kind(id)]; let x = rr(); for (let n = 0; n < 4; n++) if ((x -= w[n]) <= 0) return n; return 3; };
+  // the piece id gives next: a taken piece first (it moves over), else a copy of a random starting piece
+  function nextGift(id) {
+    const ps = P[id].pieces, gained = ps.filter((q) => !q.start);
+    if (gained.length) { const g = gained[Math.floor(rr() * gained.length)]; ps.splice(ps.indexOf(g), 1); return { pc: g, from: g }; }
+    const st = ps.filter((q) => q.start), src = st[Math.floor(rr() * st.length)];
+    return { pc: piece(src.e), from: src };
+  }
+  // one tick of a conversation: who acts, the takes (dealt out), then the gives; returns what each did
+  function exchange(cv) {
+    const chart = cv.chart, emptyBefore = chart.map((q, i) => (q ? -1 : i)).filter((i) => i >= 0);
+    const acts = [];
+    for (const id of [...cv.talkers, ...cv.listeners]) {
+      if (rr() >= ACT[kind(id)] * (S[id].reluctant > 0 ? 0.5 : 1)) continue;
+      const listen = cv.listeners.has(id);
+      const give = P[id].gives && !listen ? amount(id) : 0;
+      const take = P[id].takes ? Math.min(listen ? 1 : 3, amount(id), CAP - P[id].pieces.length) : 0;
+      if (give || take) acts.push({ id, give, take, got: [], gave: [] });
+    }
+    if (!acts.length) return acts;
+    // takes: out of what's there, dealt round the takers one piece at a time (random order) until done or none left
+    const avail = shuffle(chart.map((q, i) => (q ? i : -1)).filter((i) => i >= 0));
+    let takers = shuffle(acts.filter((a) => a.take > 0));
+    while (avail.length && takers.length) {
+      for (const a of takers) {
+        if (!avail.length) break;
+        const slot = avail.pop(), pc = chart[slot]; chart[slot] = null;
+        P[a.id].pieces.push(pc); a.got.push(pc); a.take--; pies.take(cv.id, slot);
+      }
+      takers = takers.filter((a) => a.take > 0);
+    }
+    // gives: into the slots that were empty before this tick, clockwise from the top
+    for (const a of shuffle(acts.filter((x) => x.give > 0))) {
+      for (let n = 0; n < a.give && emptyBefore.length; n++) {
+        const slot = emptyBefore.shift(), g = nextGift(a.id);
+        chart[slot] = g.pc; a.gave.push(g); pies.put(cv.id, slot, g.pc.e);
+      }
+    }
+    return acts;
+  }
+  // the bar: an indifference piece turns into the sitter's starting emotion
+  function bar(id) {
+    const s = S[id], who = L[id];
+    if (!(who.seated && who.seat && furniture.list[who.seat.furniture].kind === 'bar' && atRest(id))) { s.bar = 0; return; }
+    if (++s.bar < BAR_TICKS) return;
+    s.bar = 0;
+    const ps = P[id].pieces, q = ps.find((x) => x.e === 'indifference' && !x.start) || ps.find((x) => x.e === 'indifference');
+    if (q) { q.e = P[id].base; changed(); }
+  }
+  // what the players see: everyone they share a conversation with
+  function watch(cv, acts) {
+    const members = [...cv.talkers, ...cv.listeners];
+    for (const me of members) {
+      const p = playerOf(me); if (p == null) continue;
+      for (const id of members) {
+        if (id === me) continue;
+        const k = seen[p][id]; k.ticks++;
+        if (k.ticks >= ROLE_TICKS) k.role = true;
+        if (k.ticks % REVEAL_TICKS === 0) { const hidden = P[id].pieces.filter((q) => !k.pieces.has(q.uid)); reveal(p, id, hidden[Math.floor(rr() * hidden.length)]); }
+      }
+      for (const a of acts) {
+        if (a.id === me) continue;
+        for (const pc of a.got) reveal(p, a.id, pc);                       // you saw them take it
+        for (const g of a.gave) if (g.from.start) reveal(p, a.id, g.from); // a copy of a starting piece: now you know it
+        if (a.got.length || a.gave.length) seen[p][a.id].role = true;
+      }
+    }
+  }
+  // what player p can see of id's chart
+  function chart(p, id) {
+    const mine = L[id].player === p, k = seen[p][id], c = P[id];
+    return { pieces: c.pieces, known: (q) => mine || k.pieces.has(q.uid), role: mine || k.role ? { gives: c.gives, takes: c.takes } : null, cap: CAP, mine };
   }
 
   // ---------- moods ----------
@@ -1351,12 +1546,12 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
   // ---------- asking ----------
   // from asks to (to talk, or an invitation): done(ok) now (an NPC answers at once) or later (a player decides)
   const pending = []; // { to, done, t }
-  function ask(from, to, kind, done) {
+  function ask(from, to, kind_, done) {
     if (L[to].player !== null) {
       const p = { to, done, t: ASK_S, over: false };
       const answer = (ok) => { if (p.over) return; p.over = true; pending.splice(pending.indexOf(p), 1); done(!!ok); };
       pending.push(p);
-      if (hooks.askPlayer && hooks.me && hooks.me() === to) hooks.askPlayer(from, kind, answer); // the other player answers on their own screen
+      if (hooks.askPlayer && hooks.me && hooks.me() === to) hooks.askPlayer(from, kind_, answer); // the other player answers on their own screen
       return;
     }
     const t = S[to];
@@ -1367,20 +1562,20 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
     done(true);
   }
 
-  // ---------- intents: something a figure is on its way to do ----------
+  // ---------- intents: something a figure is on its way to do (one leg of the way per tick at most) ----------
   //   talk: walk up to target and ask; join: walk up to a standing conversation and join; sit: take a free seat at a
   //   piece of furniture; pulled: walk up to the one who pulled you aside, for a 1v1
-  function intend(id, it) { S[id].intent = { ...it, t: 0, last: null }; }
+  function intend(id, it) { S[id].intent = { ...it, t: 0 }; }
   const done = (id) => { S[id].intent = null; };
   function stepIntent(id, dt) {
     const it = S[id].intent; if (!it) return;
     it.t += dt;
     if (it.asking) return;
-    if (it.t > (L[id].player === null ? 30 : 60)) return done(id); // gave up
+    if (it.t > (L[id].player === null ? 75 : 40)) return done(id); // gave up
     if (!atRest(id)) return;
     if (it.kind === 'talk') {
       const tg = it.target, cv = convos.get(S[tg].convo);
-      if (cv && cv.kind === 'stand') { S[id].intent = { kind: 'join', convo: cv.id, t: it.t, last: null }; return; }
+      if (cv && cv.kind === 'stand') { S[id].intent = { kind: 'join', convo: cv.id, t: it.t }; return; }
       if (L[tg].seated) { S[id].intent = { kind: 'sit', furniture: L[tg].seat.furniture, t: it.t }; return; }
       if (S[tg].intent && L[tg].player === null) return; // busy: wait a moment
       if (touching(id, tg) && atRest(tg)) {
@@ -1391,9 +1586,6 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
           else if (L[id].player !== null && hooks.me && hooks.me() === id) hooks.toast(why === 'not now' ? 'They don’t want to talk right now' : 'They’d rather not talk');
         });
       }
-      const k = key(L[tg].col, L[tg].row);
-      if (it.last === k) return; // already on the way to where they are
-      it.last = k;
       const spot = spotNear([tg], id);
       if (!spot || !goTo(id, spot)) done(id);
     } else if (it.kind === 'join' || it.kind === 'pulled') {
@@ -1406,17 +1598,16 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
         else if (!S[it.by].convo) startConvo(it.by, id);
         return;
       }
-      const k = ids.map((q) => key(L[q].col, L[q].row)).join('|');
-      if (it.last === k) return;
-      it.last = k;
       const spot = spotNear(ids, id);
       if (!spot || !goTo(id, spot)) done(id);
     } else if (it.kind === 'sit') {
+      if (L[id].seated && L[id].seat.furniture === it.furniture) return done(id);
       const f = furniture.list[it.furniture], here = pos(id);
       const free = furniture.free(f).sort((a, b) => Math.hypot(a.x - here.x, a.z - here.z) - Math.hypot(b.x - here.x, b.z - here.z));
-      done(id);
       if (S[id].convo) leave(id);
-      if (!free.some((s) => moves.sit(id, s)) && hooks.me && hooks.me() === id) hooks.toast('No free seat there');
+      for (const s of free) { const r = moves.sit(id, s); if (r === true) return done(id); if (r) return; } // there, or a leg of the way
+      done(id);
+      if (hooks.me && hooks.me() === id) hooks.toast('No free seat there');
     }
   }
 
@@ -1431,7 +1622,10 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
       const social = t >= 3 ? 1 + company * 0.6 : t === 1 ? 1 / (1 + company) : 1; // the sociable go where others are, the shy where they aren't
       return PLACE[t][f.kind] * social / (10 + Math.hypot(s.x - here.x, s.z - here.z));
     });
-    return !!seat && moves.sit(id, seat);
+    if (!seat) return false;
+    const r = moves.sit(id, seat);
+    if (r === 'leg') intend(id, { kind: 'sit', furniture: seat.furniture }); // too far for one go: keep heading there
+    return !!r;
   }
   // someone, a group or a table to talk to, nearer and livelier likelier
   function seekTalk(id) {
@@ -1492,6 +1686,8 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
   }
 
   // ---------- the player's side: what tapping a person offers ----------
+  const TOO_FAR = ' · too far: get within ' + moves.REACH + ' tiles';
+  const near = (me, ids) => ids.some((id) => moves.inReach(me, L[id].col, L[id].row));
   function options(me, target) {
     if (me === target) return { info: 'You', label: null };
     const tm = S[target], mm = S[me], cvT = convos.get(tm.convo), cvM = convos.get(mm.convo);
@@ -1504,14 +1700,16 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
       return { info: cvT.kind === 'poi' ? 'At your table' : 'Talking with you', label: 'Leave conversation', act: () => { leave(me); if (L[me].seat) moves.leave(me); } };
     }
     if (L[target].seat) {
-      const f = furniture.list[L[target].seat.furniture], free = furniture.free(f).length;
-      return { info: L[target].seated ? `At the ${f.name.toLowerCase()}` : `On the way to the ${f.name.toLowerCase()}`, label: f.kind === 'chair' ? null : 'Join them', disabled: !free, act: () => playerIntent(me, { kind: 'sit', furniture: f.id }) };
+      const f = furniture.list[L[target].seat.furniture], free = furniture.free(f), ok = free.some((s) => moves.inReach(me, s.col, s.row));
+      const info = L[target].seated ? `At the ${f.name.toLowerCase()}` : `On the way to the ${f.name.toLowerCase()}`;
+      return { info: info + (free.length && !ok ? TOO_FAR : ''), label: f.kind === 'chair' ? null : 'Join them', disabled: !ok, act: () => playerIntent(me, { kind: 'sit', furniture: f.id }) };
     }
     if (cvT && cvT.kind === 'stand') {
-      const full = cvT.talkers.size >= 3;
-      return { info: full ? 'Talking in a group of 3' : 'In a conversation', label: full ? 'Listen in' : 'Join conversation', act: () => playerIntent(me, { kind: 'join', convo: cvT.id }) };
+      const full = cvT.talkers.size >= 3, ok = near(me, [...cvT.talkers]);
+      return { info: (full ? 'Talking in a group of 3' : 'In a conversation') + (ok ? '' : TOO_FAR), label: full ? 'Listen in' : 'Join conversation', disabled: !ok, act: () => playerIntent(me, { kind: 'join', convo: cvT.id }) };
     }
-    return { info: atRest(target) ? 'Standing' : 'Walking', label: 'Talk', act: () => playerIntent(me, { kind: 'talk', target }) };
+    const ok = near(me, [target]);
+    return { info: (atRest(target) ? 'Standing' : 'Walking') + (ok ? '' : TOO_FAR), label: 'Talk', disabled: !ok, act: () => playerIntent(me, { kind: 'talk', target }) };
   }
   function playerIntent(me, it) {
     if (S[me].convo && !(it.kind === 'join' && it.convo === S[me].convo)) leave(me);
@@ -1526,8 +1724,8 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
   // a player walked off on their own: out of any conversation, and nothing planned
   function playerMoved(id) { if (S[id].convo) leave(id); S[id].intent = null; }
 
-  // ---------- every frame ----------
-  function update(dt) {
+  // ---------- every tick ----------
+  function tick(dt) {
     for (const s of S) {
       for (const k of ['peeved', 'irritated', 'reluctant', 'cooldown']) if (s[k] > 0) s[k] = Math.max(0, s[k] - dt);
       if (s.convo) s.stay -= dt;
@@ -1540,27 +1738,28 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
       s.wait -= dt;
       if (s.wait <= 0) s.wait = decide(s.id);
     }
-    // sharing: talkers fill their pies
-    for (const cv of convos.values()) for (const id of cv.talkers) {
-      const s = S[id]; if (s.type === 1) continue;
-      s.share += dt / SHARE_S * (s.reluctant > 0 ? 0.5 : 1);
-      if (s.share >= 1) { s.share -= 1; const p = pies.state(id); if (p.filled < p.n) pies.add(id); }
-    }
+    for (const cv of convos.values()) { const acts = exchange(cv); watch(cv, acts); if (acts.length) changed(); }
+    for (const s of S) bar(s.id);
   }
   function debug(id) {
-    const s = S[id], cv = convos.get(s.convo);
+    const s = S[id], cv = convos.get(s.convo), c = P[id];
     const who = s.type == null ? 'P' + (L[id].player + 1) : 'T' + s.type;
+    const role = c.gives && c.takes ? 'G+T' : c.gives ? 'G' : 'T';
     const doing = cv ? (cv.kind === 'poi' ? 'table' : s.role === 'listen' ? 'listen' : cv.talkers.size === 2 ? '1v1' : 'group') : L[id].seated ? 'seat' : s.intent ? s.intent.kind : '';
     const mood = [s.peeved > 0 && 'peeved ' + Math.ceil(s.peeved), s.irritated > 0 && 'irritated ' + Math.ceil(s.irritated), s.cooldown > 0 && 'shy ' + Math.ceil(s.cooldown)].filter(Boolean).join(' · ');
-    return [who, doing, mood].filter(Boolean).join(' · ');
+    return [who, role + ' ' + c.pieces.length, doing, mood].filter(Boolean).join(' · ');
   }
-  return { update, options, playerMoved, debug, convos, state: S, intend, startConvo, leave };
+  return { tick, options, playerMoved, debug, chart, convos, state: S, personal: P, intend, startConvo, leave };
 };
 
 // ===== The world: the room (floor and walls), the characters and the camera =====
 // World(THREE, el) builds the scene into el and draws it whenever something changed (the camera moving, a resize, the
 // first frame, a pie animating). The board is BOARD.cols x BOARD.rows tiles of BOARD.tile metres, centred on the origin.
+// The game runs in ticks of TICK_S seconds: whatever a player orders (walk, talk, sit, accept...) waits for the next
+// tick and then happens at the same moment as everything the NPCs do (src/social.js). One order is queued at a time;
+// a new one replaces it.
 const BOARD = { cols: 20, rows: 8, tile: 6 }; // NML's tiles (6 m), on a wider board: 120 x 48 m
+let TICK_S = 2;
 
 const World = (THREE, el, opts = {}) => {
   const T = BOARD.tile, BW = BOARD.cols * T, BD = BOARD.rows * T;
@@ -1605,8 +1804,23 @@ const World = (THREE, el, opts = {}) => {
   // ---------- the people ----------
   const match = opts.match || Match();
   const furniture = Furniture(THREE, scene, BOARD);
-  const people = Characters(THREE, scene, BOARD, match, new Set([...furniture.blocked, ...furniture.seatTiles]));
-  const pies = Pies(THREE, scene, people, { onEvent: (type, detail) => opts.onPie && opts.onPie(type, detail) });
+  // nobody starts on furniture, on a seat, or in a pocket cut off from the room (behind the bar, say)
+  const avoid = new Set([...furniture.blocked, ...furniture.seatTiles]);
+  {
+    const k = (c, r) => c + ',' + r, ok = (c, r) => c >= 0 && r >= 0 && c < BOARD.cols && r < BOARD.rows && !avoid.has(k(c, r));
+    const start = [Math.floor(BOARD.cols / 2), BOARD.rows - 1], reach = new Set([k(...start)]), q = [start];
+    while (q.length) {
+      const [c, r] = q.pop();
+      for (let dc = -1; dc <= 1; dc++) for (let dr = -1; dr <= 1; dr++) {
+        const nc = c + dc, nr = r + dr;
+        if ((!dc && !dr) || !ok(nc, nr) || reach.has(k(nc, nr)) || (dc && dr && (!ok(c + dc, r) || !ok(c, r + dr)))) continue;
+        reach.add(k(nc, nr)); q.push([nc, nr]);
+      }
+    }
+    for (let r = 0; r < BOARD.rows; r++) for (let c = 0; c < BOARD.cols; c++) if (!reach.has(k(c, r))) avoid.add(k(c, r));
+  }
+  const people = Characters(THREE, scene, BOARD, match, avoid);
+  const pies = Pies(THREE, scene, { height: people.height, onEvent: (type, detail) => opts.onPie && opts.onPie(type, detail) });
   const moves = Movement(THREE, scene, BOARD, people, furniture, { me: opts.me || 0 });
 
   // ---------- taps: on a person or a piece of furniture opens a popup over it; on a tile walks you there ----------
@@ -1615,7 +1829,7 @@ const World = (THREE, el, opts = {}) => {
     const r = renderer.domElement.getBoundingClientRect();
     ndc.set((cx - r.left) / r.width * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
-    const hit = ray.intersectObjects([...people.list.map((n) => n.group), ...pies.targets()], true).find((h) => h.object.userData.who != null);
+    const hit = ray.intersectObjects(people.list.map((n) => n.group), true).find((h) => h.object.userData.who != null);
     return hit ? hit.object.userData.who : null;
   }
   function furnitureAt() { // (after personAt, which aimed the ray)
@@ -1625,7 +1839,14 @@ const World = (THREE, el, opts = {}) => {
 
   // ---------- the popup: over a piece of furniture (sit down, get up), over a person (talk, join, listen, speak up,
   // pull aside, leave), or over someone asking you (accept) ----------
-  const ui = opts.ui || {}, pop = ui.popup; // { el, name, info, go } (elements, from the page)
+  const ui = opts.ui || {}, pop = ui.popup; // { el, name, info, go, chart } (elements, from the page)
+  // ---------- orders: what each player does on the next tick ----------
+  const orders = [null, null]; // per player: { label, run }
+  function order(label, run, walkTo) {
+    const p = moves.me(); orders[p] = { label, run };
+    moves.preview(walkTo ? walkTo.col : null, walkTo ? walkTo.row : null);
+    dirty = true;
+  }
   let popFor = null; // { kind: 'furniture', f } | { kind: 'person', id } | { kind: 'ask', from, ask, answer }
   const meId = () => moves.mine().id;
   const mySeatAt = (f) => { const me = moves.mine(); return me.seat && me.seat.furniture === f.id ? me.seat : null; };
@@ -1647,17 +1868,34 @@ const World = (THREE, el, opts = {}) => {
       pop.name.textContent = f.name;
       pop.info.textContent = n === 1 ? (mine ? 'Your seat' : free ? 'Free' : 'Taken') : `${free} of ${n} ${f.kind === 'mingle' ? 'places' : 'seats'} free`;
       pop.go.textContent = mine ? (mine.pose === 'sit' ? 'Get up' : 'Leave table') : f.verb;
-      pop.go.disabled = !mine && !free; pop.go.hidden = false;
+      const reach = furniture.free(f).some((s) => moves.inReach(meId(), s.col, s.row));
+      if (!mine && free && !reach) pop.info.textContent += ' · too far';
+      pop.go.disabled = !mine && (!free || !reach); pop.go.hidden = false;
     } else if (p.kind === 'person') {
       const o = social.options(meId(), p.id);
       pop.name.textContent = p.id === meId() ? 'You' : 'Guest';
-      pop.info.textContent = o.info; p.act = o.act;
+      pop.info.textContent = o.info; p.act = o.act; p.label = o.label;
       pop.go.hidden = !o.label; pop.go.textContent = o.label || ''; pop.go.disabled = !!o.disabled;
     } else {
       pop.name.textContent = 'Guest';
       pop.info.textContent = p.ask === 'invite' ? 'Invites you to join them' : 'Wants to talk to you';
       pop.go.hidden = false; pop.go.textContent = 'Accept'; pop.go.disabled = false;
     }
+    drawChart(pop.chart, p.kind === 'furniture' ? null : p.kind === 'person' ? p.id : p.from, 112);
+  }
+  // a person's personal chart (2D), as far as you've seen it, and whether they give, take or both
+  const drawn = new WeakMap();
+  function drawChart(el, id, size) {
+    if (!el) return;
+    if (id == null) { el.hidden = true; return; }
+    const c = social.chart(moves.me(), id), seenN = c.pieces.filter(c.known).length;
+    const counts = {}; for (const q of c.pieces) if (c.known(q)) counts[q.e] = (counts[q.e] || 0) + 1;
+    const role = !c.role ? 'Gives ? · Takes ?' : c.role.gives && c.role.takes ? 'Gives and takes' : c.role.gives ? 'Gives only' : 'Takes only';
+    const rows = EMOTIONS.filter((e) => counts[e.key]).map((e) => `<div class="chip"><i style="background:${e.color}"></i>${e.name} ×${counts[e.key]}</div>`).join('');
+    const html = chartSVG(c.pieces, c.known, size) + `<div class="chart-side"><div class="chart-role">${role}</div>`
+      + `<div class="chart-meta">${c.pieces.length} of ${c.cap} pieces${c.mine ? '' : ` · ${seenN} seen`}</div>${rows}</div>`;
+    if (drawn.get(el) !== html) { el.innerHTML = html; drawn.set(el, html); }
+    el.hidden = false;
   }
   function closePop() {
     if (pop) pop.el.hidden = true;
@@ -1673,7 +1911,7 @@ const World = (THREE, el, opts = {}) => {
     if (popFor.kind === 'furniture') { [x, z] = furniture.middle(popFor.f); y = popFor.f.top + 1.5; }
     else {
       const id = popFor.kind === 'person' ? popFor.id : popFor.from, g = people.list[id].group;
-      x = g.position.x; z = g.position.z; y = people.height + (pies.state(id).shown ? 6.2 : 1.2);
+      x = g.position.x; z = g.position.z; y = people.height + 1.2;
       pick.position.x = x; pick.position.z = z;
     }
     const r = renderer.domElement.getBoundingClientRect();
@@ -1686,16 +1924,19 @@ const World = (THREE, el, opts = {}) => {
   }
   if (pop) pop.go.addEventListener('click', () => {
     const p = popFor; if (!p) return;
-    const me = moves.mine();
+    const me = moves.mine().id;
     if (p.kind === 'furniture') {
-      social.playerMoved(me.id);
-      if (mySeatAt(p.f)) moves.leave(me.id);
-      else {
-        const pos = me.group.position, free = furniture.free(p.f).sort((a, b) => Math.hypot(a.x - pos.x, a.z - pos.z) - Math.hypot(b.x - pos.x, b.z - pos.z));
-        for (const s of free) if (moves.sit(me.id, s)) break;
-      }
-    } else if (p.kind === 'person') { if (p.act) p.act(); }
-    else { const a = p.answer; popFor = null; a(true); }
+      const f = p.f;
+      order(mySeatAt(f) ? 'Get up' : f.verb, () => {
+        social.playerMoved(me);
+        if (mySeatAt(f)) { moves.leave(me); return; }
+        const pos = moves.mine().group.position, free = furniture.free(f).filter((s) => moves.inReach(me, s.col, s.row)).sort((a, b) => Math.hypot(a.x - pos.x, a.z - pos.z) - Math.hypot(b.x - pos.x, b.z - pos.z));
+        for (const s of free) if (moves.sit(me, s) === true) break;
+      });
+    } else if (p.kind === 'person') {
+      const target = p.id, label = p.label; // checked again on the tick: things may have changed by then
+      order(label, () => { const o = social.options(me, target); if (o.label === label && !o.disabled && o.act) o.act(); });
+    } else { const a = p.answer; popFor = null; order('Accept', () => a(true)); }
     closePop(); dirty = true;
   });
   // a short line about what just happened
@@ -1709,6 +1950,7 @@ const World = (THREE, el, opts = {}) => {
       let over = false; const once = (ok) => { if (over) return; over = true; answer(ok); };
       if (popFor && popFor.kind !== 'ask') return; // busy with something else: no answer is an answer
       openPop({ kind: 'ask', from, ask: kind, answer: once });
+      return once;
     },
   });
   // what NPCs ask an accepted player: an invitation takes you there
@@ -1738,7 +1980,10 @@ const World = (THREE, el, opts = {}) => {
       if (f != null) { openPop({ kind: 'furniture', f: furniture.list[f] }); return; }
       closePop();
       const t = point && people.tileOf(point.x, point.z);
-      if (t) { social.playerMoved(meId()); moves.moveTo(meId(), t.col, t.row); dirty = true; }
+      if (!t) return;
+      if (!moves.inReach(meId(), t.col, t.row)) { toast(`Too far: you walk ${moves.REACH} tiles at a time`); return; }
+      const me = meId();
+      order('Walk', () => { social.playerMoved(me); moves.moveTo(me, t.col, t.row); }, t);
     },
   });
 
@@ -1752,10 +1997,28 @@ const World = (THREE, el, opts = {}) => {
   window.addEventListener('resize', size);
   size();
 
+  // ---------- ticks ----------
+  let tickT = 0, ticks = 0, paused = false; // pause(true) stops the clock (tick() still steps it by hand, for tests)
+  function tick() {
+    ticks++;
+    for (let p = 0; p < 2; p++) { const o = orders[p]; orders[p] = null; if (o) o.run(); }
+    moves.preview(null);
+    social.tick(TICK_S);
+    dirty = true;
+  }
+  // the HUD: the tick clock, your queued order, your own chart
+  const hud = ui.hud || {};
+  function drawHud() {
+    if (hud.ring) hud.ring.style.setProperty('--t', (tickT / TICK_S).toFixed(3));
+    if (hud.next) { const o = orders[moves.me()]; hud.next.textContent = o ? 'Next tick: ' + o.label : 'Tick ' + ticks; }
+    drawChart(hud.chart, meId(), 72);
+  }
+
   let last = performance.now(), frozen = false; // freeze(true) stops drawing (for stepping frames by hand in tests)
   function frame(now) {
     const dt = Math.min(0.1, (now - last) / 1000); last = now;
-    social.update(dt);
+    if (!paused && (tickT += dt) >= TICK_S) { tickT -= TICK_S; tick(); }
+    drawHud();
     if (popFor) refreshPop();
     if (toastT > 0 && (toastT -= dt) <= 0) ui.toast.hidden = true;
     if (dev) dirty = true;
@@ -1777,11 +2040,14 @@ const World = (THREE, el, opts = {}) => {
   }
   requestAnimationFrame(frame);
 
-  return { scene, camera: cam, cam3: camera, match, people, furniture, pies, moves, social, closePop, showTypes: (on) => { dev = on; dirty = true; if (!on) placeLabels(); }, setMe: (p) => { moves.setMe(p); dirty = true; }, renderer, render: () => { dirty = true; }, freeze: (on) => { frozen = on; dirty = true; } };
+  return { scene, camera: cam, cam3: camera, match, people, furniture, pies, moves, social, closePop, tick, order,
+    pause: (on) => { paused = on; }, setTick: (s) => { TICK_S = Math.max(0.1, s); tickT = Math.min(tickT, TICK_S); }, ticks: () => ticks, showTypes: (on) => { dev = on; dirty = true; if (!on) placeLabels(); }, setMe: (p) => { moves.setMe(p); dirty = true; }, renderer, render: () => { dirty = true; }, freeze: (on) => { frozen = on; dirty = true; } };
 };
 
 const $ = (id) => document.getElementById(id);
-window.agenda = World(THREE, $('world'), { ui: { popup: { el: $('pop'), name: $('pop-name'), info: $('pop-info'), go: $('pop-go') }, toast: $('toast'), labels: $('labels') } });
+window.agenda = World(THREE, $('world'), { ui: { popup: { el: $('pop'), name: $('pop-name'), info: $('pop-info'), go: $('pop-go'), chart: $('pop-chart') }, toast: $('toast'), labels: $('labels'),
+  hud: { ring: $('tick-ring'), next: $('next'), chart: $('hud-chart') } } });
+$('legend').innerHTML = EMOTIONS.map((e) => `<div class="chip"><i style="background:${e.color}"></i>${e.name}</div>`).join('');
 // for testing: each person's type, what they're doing and their mood
 let types = false;
 $('types').addEventListener('click', () => { types = !types; agenda.showTypes(types); $('types').textContent = types ? 'Hide types' : 'Show types'; });

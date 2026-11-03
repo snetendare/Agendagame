@@ -2,7 +2,7 @@
 // Run from the repo root:  node src/build.js
 const fs = require('fs'), path = require('path');
 const src = (f) => fs.readFileSync(path.join(__dirname, f), 'utf8');
-const FILES = ['camera3d.js', 'floor.js', 'room.js', 'match.js', 'furniture.js', 'characters.js', 'pies.js', 'movement.js', 'social.js', 'world.js'];
+const FILES = ['camera3d.js', 'floor.js', 'room.js', 'match.js', 'emotions.js', 'furniture.js', 'characters.js', 'pies.js', 'movement.js', 'social.js', 'world.js'];
 for (const f of FILES) new Function(src(f)); // each file must parse
 const code = FILES.map(src).join('\n');
 const page = (threeUrl, extra = '') => src('template.html').replace('/*THREE_URL*/', () => threeUrl).replace('/*CODE*/', () => extra + code);
