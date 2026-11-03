@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0D1315">
+<title>Agenda</title>
+<style>
+:root { --bg: #0D1315; }
+:root { color-scheme: dark; }
+html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; overscroll-behavior: none; }
+#world { position: fixed; inset: 0; }
+#world canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="world"></div>
+<script type="module">
+import * as THREE from '/*THREE_URL*/';
+/*CODE*/
+window.agenda = World(THREE, document.getElementById('world'));
+</script>
+</body>
+</html>
