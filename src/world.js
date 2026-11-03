@@ -71,7 +71,7 @@ const World = (THREE, el, opts = {}) => {
   const mySeatAt = (f) => { const me = moves.mine(); return me.seat && me.seat.furniture === f.id ? me.seat : null; };
   function openPop(id) {
     if (!pop) return;
-    popFor = furniture.list[id]; refreshPop();
+    popFor = furniture.list[id]; refreshPop(); furniture.highlight(id);
     pop.el.hidden = false; placePop(); dirty = true;
   }
   function refreshPop() { // its text, again as seats come and go
@@ -81,7 +81,7 @@ const World = (THREE, el, opts = {}) => {
     pop.go.textContent = mine ? (mine.pose === 'sit' ? 'Get up' : 'Leave table') : f.verb;
     pop.go.disabled = !mine && !free;
   }
-  function closePop() { if (pop) pop.el.hidden = true; popFor = null; }
+  function closePop() { if (pop) pop.el.hidden = true; if (popFor) dirty = true; popFor = null; furniture.highlight(null); }
   const v3 = new THREE.Vector3();
   function placePop() {
     if (!popFor || !pop) return;

@@ -136,5 +136,31 @@ const Furniture = (THREE, scene, board) => {
   const middle = (f) => { const pts = f.tiles.length ? f.tiles.map(([c, r]) => centre(c, r)) : f.seats.map((s) => [s.x, s.z]); return [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length]; };
   const targets = () => list.flatMap((f) => [f.group, ...f.parts]);
   const free = (f) => f.seats.filter((s) => s.by == null);
-  return { list, seats, blocked, seatTiles, targets, middle, free, key };
+  // ---------- highlight: the piece you tapped glows warm and gets a gold outline on the floor round it ----------
+  const HI = '#F2D16B';
+  const hiMats = new Map(); // a material -> its glowing copy
+  const glow = (m) => { if (!hiMats.has(m)) { const h = m.clone(); h.emissive.set(HI); h.emissiveIntensity = 0.3; hiMats.set(m, h); } return hiMats.get(m); };
+  const outlineMat = new THREE.MeshBasicMaterial({ color: HI, transparent: true, opacity: 0.95, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  const outline = new THREE.Mesh(new THREE.BufferGeometry(), outlineMat); outline.rotation.x = -Math.PI / 2; outline.position.y = 0.06; outline.renderOrder = 2; outline.visible = false; scene.add(outline);
+  const bb = new THREE.Box3(), part = new THREE.Box3();
+  let lit = null;
+  function highlight(id) {
+    const f = id == null ? null : list[id];
+    if (f === lit) return;
+    const meshes = (p) => { const out = []; for (const o of [p.group, ...p.parts]) o.traverse((m) => { if (m.isMesh) out.push(m); }); return out; };
+    if (lit) for (const m of meshes(lit)) { if (m.userData.plain) { m.material = m.userData.plain; delete m.userData.plain; } }
+    lit = f; outline.visible = !!f;
+    if (!f) return;
+    for (const m of meshes(f)) { m.userData.plain = m.material; m.material = glow(m.material); }
+    // the outline: a rounded rectangle round everything the piece is made of (its table and its chairs)
+    bb.makeEmpty(); for (const o of [f.group, ...f.parts]) { part.setFromObject(o); bb.union(part); }
+    const pad = 0.5, w = 0.28, x0 = bb.min.x - pad, x1 = bb.max.x + pad, z0 = bb.min.z - pad, z1 = bb.max.z + pad;
+    const rect = (a0, a1, b0, b1, r, path) => { path.moveTo(a0 + r, b0); path.lineTo(a1 - r, b0); path.quadraticCurveTo(a1, b0, a1, b0 + r); path.lineTo(a1, b1 - r); path.quadraticCurveTo(a1, b1, a1 - r, b1);
+      path.lineTo(a0 + r, b1); path.quadraticCurveTo(a0, b1, a0, b1 - r); path.lineTo(a0, b0 + r); path.quadraticCurveTo(a0, b0, a0 + r, b0); return path; };
+    // (the shape is drawn in x, -z: it is laid flat by turning it a quarter round x)
+    const shape = rect(x0, x1, -z1, -z0, 0.9, new THREE.Shape()), hole = rect(x0 + w, x1 - w, -z1 + w, -z0 - w, 0.9 - w, new THREE.Path());
+    shape.holes.push(hole);
+    outline.geometry.dispose(); outline.geometry = new THREE.ShapeGeometry(shape, 8);
+  }
+  return { list, seats, blocked, seatTiles, targets, middle, free, key, highlight };
 };
