@@ -6,6 +6,8 @@
 //   sit(id, seat)        walk to a seat (src/furniture.js) and sit down at it (or stand at it, at a standing table),
 //                         facing the table; the seat is held for id from now. Walking anywhere else gets up first.
 //   leave(id)            get up and step to the nearest free tile
+//   stand(id, x, z, fx, fz)  standing still, step to the point (x, z) near its tile (into a conversation's circle, or
+//                         back to the tile's middle) and face (fx, fz) if given. The tile stays its place for paths.
 //   setMe(player)         whose view this is (0 or 1): only that player's figure gets the circle under it, and only that
 //                         player's planned path is drawn. The other player's figure looks like any NPC.
 //   update(dt), busy()    once per drawn frame; busy while anyone walks
@@ -17,6 +19,7 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   const TURN = 9;           // how fast a figure turns to face where it walks (per second)
   const POSE_S = 0.32;      // seconds to sit down or get up
   const SIT_SQUASH = 0.3;   // a sitting figure is this much shorter (the robe folds over the seat)
+  const STEP_SPEED = 1.6;   // m/s: stepping in to a conversation, a little slower than walking
   const ARROW_W = 0.9;      // the path arrow's width (m)
   const HEAD_L = 1.9, HEAD_W = 2.4; // its head
   const MINE = '#F2D16B';   // your marks: the circle, the arrow, the destination
@@ -105,7 +108,7 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
     blocked.delete(key(from.col, from.row));
     const tiles = path(from, to, blocked);
     if (!tiles) return false;
-    release(who); who.faceAt = null;
+    release(who); who.faceAt = null; who.spot = null;
     if (seat) { seat.by = id; who.seat = seat; }
     // from where the figure is now, through the middles of the tiles after the one it's on, pulled straight: a corner
     // is kept only where a straight line to a later tile would brush someone (A* zigzags between equally short routes)
@@ -169,6 +172,14 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
       turnTo(g, Math.atan2(-tan.x, -tan.z), dt); // the body faces -z
       if (w.s >= w.len) { walks.delete(id); const who = people.list[id]; if (who.seat) who.seated = true; }
     }
+    // stepping in to a conversation's circle (or back to the tile's middle)
+    for (const who of people.list) {
+      if (!who.spot || walks.has(who.id) || who.seated) continue;
+      const g = who.group, dx = who.spot[0] - g.position.x, dz = who.spot[1] - g.position.z, d = Math.hypot(dx, dz);
+      if (d < 0.005) { g.position.x = who.spot[0]; g.position.z = who.spot[1]; continue; }
+      const k = Math.min(1, STEP_SPEED * dt / d), e = d < 0.6 ? Math.max(0.35, d / 0.6) : 1; // eases in over the last half metre
+      g.position.x += dx * Math.min(1, k * e); g.position.z += dz * Math.min(1, k * e);
+    }
     // sitting down and getting up, and turning to face the table once there
     for (const who of people.list) {
       const g = who.group, want = who.seated && who.seat.pose === 'sit' ? 1 : 0;
@@ -189,8 +200,10 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   const off = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
   // face(id, x, z): standing still, turn to look at that point (someone you talk to, the middle of a group)
   function face(id, x, z) { const who = people.list[id]; who.faceAt = [x, z]; }
+  function stand(id, x, z, fx, fz) { const who = people.list[id]; who.spot = [x, z]; who.faceAt = fx == null ? null : [fx, fz]; }
   const settling = () => people.list.some((w) => (w.seated && !walks.has(w.id) && off(w.seat.yaw, w.group.rotation.y) > 0.01)
     || (!w.seated && w.faceAt && !walks.has(w.id) && off(faceYaw(w), w.group.rotation.y) > 0.01)
+    || (!w.seated && w.spot && !walks.has(w.id) && Math.hypot(w.spot[0] - w.group.position.x, w.spot[1] - w.group.position.z) > 0.005)
     || w.pose !== (w.seated && w.seat.pose === 'sit' ? 1 : 0));
-  return { moveTo, sit, leave, face, setMe, update, busy: () => walks.size > 0 || settling(), walking: (id) => walks.has(id), me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
+  return { moveTo, sit, leave, face, stand, setMe, update, busy: () => walks.size > 0 || settling(), walking: (id) => walks.has(id), me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
 };

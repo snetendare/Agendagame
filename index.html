@@ -847,7 +847,7 @@ const Pies = (THREE, scene, people, opts = {}) => {
     }
     scene.add(holder);
     return { id: who.id, owner: who.group, n, holder, pop, inner, pieces, filled: 0, shown: false, popT: 1, popDir: 0,
-      s: spring(240, 0.26), tx: spring(200, 0.24), ty: spring(200, 0.24), chips: [], finale: -1 };
+      s: spring(240, 0.26), tx: spring(200, 0.24), ty: spring(200, 0.24), chips: [], finale: -1, off: [0, 0], offNow: [0, 0] };
   });
 
   // ---------- the moves ----------
@@ -904,7 +904,9 @@ const Pies = (THREE, scene, people, opts = {}) => {
     for (const p of pies) {
       if (!p.holder.visible) continue;
       p.holder.quaternion.copy(camera.quaternion).multiply(tiltQ);
-      p.holder.position.x = p.owner.position.x; p.holder.position.z = p.owner.position.z; // over its owner's head
+      // over its owner's head, pushed out by its offset (so the pies of people standing close don't pile up), easing there
+      for (const k of [0, 1]) { const d = p.off[k] - p.offNow[k]; p.offNow[k] = Math.abs(d) < 0.01 ? p.off[k] : p.offNow[k] + d * Math.min(1, dt * 6); }
+      p.holder.position.x = p.owner.position.x + p.offNow[0]; p.holder.position.z = p.owner.position.z + p.offNow[1];
       // popping up (or away)
       if (p.popDir) {
         p.popT = Math.min(1, p.popT + dt / (p.popDir > 0 ? 0.38 : 0.22));
@@ -968,11 +970,13 @@ const Pies = (THREE, scene, people, opts = {}) => {
       }
     }
   }
-  const busy = () => pies.some((p) => p.holder.visible && (p.popDir || p.chips.length || p.finale >= 0 || ![p.s, p.tx, p.ty].every(resting)
+  const busy = () => pies.some((p) => p.holder.visible && (p.popDir || p.off[0] !== p.offNow[0] || p.off[1] !== p.offNow[1] || p.chips.length || p.finale >= 0 || ![p.s, p.tx, p.ty].every(resting)
     || p.pieces.some((pc) => pc.state === 'fly' || pc.state === 'out' || pc.bump || pc.flash > 0 || (pc.state === 'seated' && !(resting(pc.z) && resting(pc.sq))))));
   const targets = () => pies.filter((p) => p.holder.visible).map((p) => p.holder);
+  // offset(id, dx, dz): hold the pie that far (m) from over its owner's head
+  const offset = (id, dx, dz) => { pies[id].off = [dx, dz]; };
   const state = (id) => ({ filled: pies[id].filled, n: pies[id].n, shown: pies[id].shown });
-  return { show, hide, add, clear, update, busy, targets, state, list: pies };
+  return { show, hide, add, clear, update, busy, targets, state, offset, list: pies };
 };
 
 // ===== Walking: the players move their figures tile to tile, and see their own figure and plan marked =====
@@ -983,6 +987,8 @@ const Pies = (THREE, scene, people, opts = {}) => {
 //   sit(id, seat)        walk to a seat (src/furniture.js) and sit down at it (or stand at it, at a standing table),
 //                         facing the table; the seat is held for id from now. Walking anywhere else gets up first.
 //   leave(id)            get up and step to the nearest free tile
+//   stand(id, x, z, fx, fz)  standing still, step to the point (x, z) near its tile (into a conversation's circle, or
+//                         back to the tile's middle) and face (fx, fz) if given. The tile stays its place for paths.
 //   setMe(player)         whose view this is (0 or 1): only that player's figure gets the circle under it, and only that
 //                         player's planned path is drawn. The other player's figure looks like any NPC.
 //   update(dt), busy()    once per drawn frame; busy while anyone walks
@@ -994,6 +1000,7 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   const TURN = 9;           // how fast a figure turns to face where it walks (per second)
   const POSE_S = 0.32;      // seconds to sit down or get up
   const SIT_SQUASH = 0.3;   // a sitting figure is this much shorter (the robe folds over the seat)
+  const STEP_SPEED = 1.6;   // m/s: stepping in to a conversation, a little slower than walking
   const ARROW_W = 0.9;      // the path arrow's width (m)
   const HEAD_L = 1.9, HEAD_W = 2.4; // its head
   const MINE = '#F2D16B';   // your marks: the circle, the arrow, the destination
@@ -1082,7 +1089,7 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
     blocked.delete(key(from.col, from.row));
     const tiles = path(from, to, blocked);
     if (!tiles) return false;
-    release(who); who.faceAt = null;
+    release(who); who.faceAt = null; who.spot = null;
     if (seat) { seat.by = id; who.seat = seat; }
     // from where the figure is now, through the middles of the tiles after the one it's on, pulled straight: a corner
     // is kept only where a straight line to a later tile would brush someone (A* zigzags between equally short routes)
@@ -1146,6 +1153,14 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
       turnTo(g, Math.atan2(-tan.x, -tan.z), dt); // the body faces -z
       if (w.s >= w.len) { walks.delete(id); const who = people.list[id]; if (who.seat) who.seated = true; }
     }
+    // stepping in to a conversation's circle (or back to the tile's middle)
+    for (const who of people.list) {
+      if (!who.spot || walks.has(who.id) || who.seated) continue;
+      const g = who.group, dx = who.spot[0] - g.position.x, dz = who.spot[1] - g.position.z, d = Math.hypot(dx, dz);
+      if (d < 0.005) { g.position.x = who.spot[0]; g.position.z = who.spot[1]; continue; }
+      const k = Math.min(1, STEP_SPEED * dt / d), e = d < 0.6 ? Math.max(0.35, d / 0.6) : 1; // eases in over the last half metre
+      g.position.x += dx * Math.min(1, k * e); g.position.z += dz * Math.min(1, k * e);
+    }
     // sitting down and getting up, and turning to face the table once there
     for (const who of people.list) {
       const g = who.group, want = who.seated && who.seat.pose === 'sit' ? 1 : 0;
@@ -1166,10 +1181,12 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   const off = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
   // face(id, x, z): standing still, turn to look at that point (someone you talk to, the middle of a group)
   function face(id, x, z) { const who = people.list[id]; who.faceAt = [x, z]; }
+  function stand(id, x, z, fx, fz) { const who = people.list[id]; who.spot = [x, z]; who.faceAt = fx == null ? null : [fx, fz]; }
   const settling = () => people.list.some((w) => (w.seated && !walks.has(w.id) && off(w.seat.yaw, w.group.rotation.y) > 0.01)
     || (!w.seated && w.faceAt && !walks.has(w.id) && off(faceYaw(w), w.group.rotation.y) > 0.01)
+    || (!w.seated && w.spot && !walks.has(w.id) && Math.hypot(w.spot[0] - w.group.position.x, w.spot[1] - w.group.position.z) > 0.005)
     || w.pose !== (w.seated && w.seat.pose === 'sit' ? 1 : 0));
-  return { moveTo, sit, leave, face, setMe, update, busy: () => walks.size > 0 || settling(), walking: (id) => walks.has(id), me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
+  return { moveTo, sit, leave, face, stand, setMe, update, busy: () => walks.size > 0 || settling(), walking: (id) => walks.has(id), me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
 };
 
 // ===== The party's social life: who talks to whom, in what mood, and what they share =====
@@ -1257,29 +1274,43 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
     if (s.convo && s.convo !== cv.id) leave(id);
     (role === 'talk' ? cv.talkers : cv.listeners).add(id);
     s.convo = cv.id; s.role = role; s.stay = stayFor(id, cv.kind); s.nudges.clear();
-    pies.show(id);
+    if (role === 'talk') pies.show(id);
   }
-  function faceAll(cv) {
+  // a standing conversation's circle: its middle is the middle of the talkers' tiles; the talkers step in to evenly
+  // spaced places round it (a 1v1 face to face, a group of 3 in a triangle), listeners to a wider ring outside them.
+  // Their tiles stay their places for walking and blocking; only the bodies move in.
+  const RING = { 2: 1.6, 3: 2.0 }, LISTEN_OUT = 2.8;
+  const PIE_OUT = { 2: 1.6, 3: 2.3 }; // how far each talker's pie leans out from the middle
+  function arrange(cv) {
     if (cv.kind !== 'stand') return;
-    const ts = [...cv.talkers], cx = ts.reduce((a, id) => a + people.centre(L[id].col, L[id].row)[0], 0) / ts.length, cz = ts.reduce((a, id) => a + people.centre(L[id].col, L[id].row)[1], 0) / ts.length;
-    for (const id of [...cv.talkers, ...cv.listeners]) {
-      if (cv.talkers.size === 2 && cv.talkers.has(id)) { const o = ts.find((q) => q !== id); moves.face(id, pos(o).x, pos(o).z); } // a 1v1 looks at each other
-      else moves.face(id, cx, cz);
-    }
+    const tc = (id) => people.centre(L[id].col, L[id].row), ts = [...cv.talkers], n = ts.length;
+    const cx = ts.reduce((a, id) => a + tc(id)[0], 0) / n, cz = ts.reduce((a, id) => a + tc(id)[1], 0) / n, R = RING[n] || 2.2;
+    // in order round the middle, then evenly spaced, turned to sit closest to where each one already is
+    const order = ts.map((id) => ({ id, a: Math.atan2(tc(id)[1] - cz, tc(id)[0] - cx) })).sort((a, b) => a.a - b.a);
+    let sx = 0, sy = 0; order.forEach((o, i) => { const d = o.a - i * 2 * Math.PI / n; sx += Math.cos(d); sy += Math.sin(d); });
+    const base = Math.atan2(sy, sx);
+    order.forEach((o, i) => {
+      const a = base + i * 2 * Math.PI / n;
+      moves.stand(o.id, cx + Math.cos(a) * R, cz + Math.sin(a) * R, cx, cz);
+      pies.offset(o.id, Math.cos(a) * PIE_OUT[n], Math.sin(a) * PIE_OUT[n]); pies.show(o.id); // pies fan out from the middle
+    });
+    for (const id of cv.listeners) { const [x, z] = tc(id), a = Math.atan2(z - cz, x - cx); moves.stand(id, cx + Math.cos(a) * (R + LISTEN_OUT), cz + Math.sin(a) * (R + LISTEN_OUT), cx, cz); pies.hide(id); } // listeners share nothing: no pie
   }
+  // out of a conversation and standing still: back to the middle of its own tile
+  const stepBack = (id) => { if (!L[id].seat && !moves.walking(id)) { const [x, z] = people.centre(L[id].col, L[id].row); moves.stand(id, x, z); } else L[id].faceAt = null; };
   function startConvo(a, b) {
     for (const id of [a, b]) if (S[id].convo) leave(id);
     const cv = { id: nextId++, kind: 'stand', talkers: new Set(), listeners: new Set() };
-    convos.set(cv.id, cv); enter(cv, a, 'talk'); enter(cv, b, 'talk'); faceAll(cv); changed();
+    convos.set(cv.id, cv); enter(cv, a, 'talk'); enter(cv, b, 'talk'); arrange(cv); changed();
     return cv;
   }
   function join(cv, id) {
     if (cv.kind !== 'stand') return;
-    enter(cv, id, cv.talkers.size < 3 ? 'talk' : 'listen'); faceAll(cv); changed();
+    enter(cv, id, cv.talkers.size < 3 ? 'talk' : 'listen'); arrange(cv); changed();
   }
   function leave(id) {
     const s = S[id], cv = convos.get(s.convo);
-    s.convo = null; s.role = null; s.nudges.clear(); L[id].faceAt = null;
+    s.convo = null; s.role = null; s.nudges.clear(); stepBack(id); pies.offset(id, 0, 0);
     pies.hide(id);
     if (!cv) return;
     cv.talkers.delete(id); cv.listeners.delete(id);
@@ -1287,8 +1318,8 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
     while (cv.kind === 'stand' && cv.talkers.size < 3 && cv.listeners.size) { const q = cv.listeners.values().next().value; cv.listeners.delete(q); cv.talkers.add(q); S[q].role = 'talk'; }
     if (cv.talkers.size < 2) { // too few left to talk: it's over
       convos.delete(cv.id);
-      for (const q of [...cv.talkers, ...cv.listeners]) { S[q].convo = null; S[q].role = null; S[q].nudges.clear(); L[q].faceAt = null; pies.hide(q); }
-    } else faceAll(cv);
+      for (const q of [...cv.talkers, ...cv.listeners]) { S[q].convo = null; S[q].role = null; S[q].nudges.clear(); stepBack(q); pies.offset(q, 0, 0); pies.hide(q); }
+    } else arrange(cv);
     changed();
   }
   // everyone seated at the same piece of furniture talks together

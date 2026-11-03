@@ -83,29 +83,43 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
     if (s.convo && s.convo !== cv.id) leave(id);
     (role === 'talk' ? cv.talkers : cv.listeners).add(id);
     s.convo = cv.id; s.role = role; s.stay = stayFor(id, cv.kind); s.nudges.clear();
-    pies.show(id);
+    if (role === 'talk') pies.show(id);
   }
-  function faceAll(cv) {
+  // a standing conversation's circle: its middle is the middle of the talkers' tiles; the talkers step in to evenly
+  // spaced places round it (a 1v1 face to face, a group of 3 in a triangle), listeners to a wider ring outside them.
+  // Their tiles stay their places for walking and blocking; only the bodies move in.
+  const RING = { 2: 1.6, 3: 2.0 }, LISTEN_OUT = 2.8;
+  const PIE_OUT = { 2: 1.6, 3: 2.3 }; // how far each talker's pie leans out from the middle
+  function arrange(cv) {
     if (cv.kind !== 'stand') return;
-    const ts = [...cv.talkers], cx = ts.reduce((a, id) => a + people.centre(L[id].col, L[id].row)[0], 0) / ts.length, cz = ts.reduce((a, id) => a + people.centre(L[id].col, L[id].row)[1], 0) / ts.length;
-    for (const id of [...cv.talkers, ...cv.listeners]) {
-      if (cv.talkers.size === 2 && cv.talkers.has(id)) { const o = ts.find((q) => q !== id); moves.face(id, pos(o).x, pos(o).z); } // a 1v1 looks at each other
-      else moves.face(id, cx, cz);
-    }
+    const tc = (id) => people.centre(L[id].col, L[id].row), ts = [...cv.talkers], n = ts.length;
+    const cx = ts.reduce((a, id) => a + tc(id)[0], 0) / n, cz = ts.reduce((a, id) => a + tc(id)[1], 0) / n, R = RING[n] || 2.2;
+    // in order round the middle, then evenly spaced, turned to sit closest to where each one already is
+    const order = ts.map((id) => ({ id, a: Math.atan2(tc(id)[1] - cz, tc(id)[0] - cx) })).sort((a, b) => a.a - b.a);
+    let sx = 0, sy = 0; order.forEach((o, i) => { const d = o.a - i * 2 * Math.PI / n; sx += Math.cos(d); sy += Math.sin(d); });
+    const base = Math.atan2(sy, sx);
+    order.forEach((o, i) => {
+      const a = base + i * 2 * Math.PI / n;
+      moves.stand(o.id, cx + Math.cos(a) * R, cz + Math.sin(a) * R, cx, cz);
+      pies.offset(o.id, Math.cos(a) * PIE_OUT[n], Math.sin(a) * PIE_OUT[n]); pies.show(o.id); // pies fan out from the middle
+    });
+    for (const id of cv.listeners) { const [x, z] = tc(id), a = Math.atan2(z - cz, x - cx); moves.stand(id, cx + Math.cos(a) * (R + LISTEN_OUT), cz + Math.sin(a) * (R + LISTEN_OUT), cx, cz); pies.hide(id); } // listeners share nothing: no pie
   }
+  // out of a conversation and standing still: back to the middle of its own tile
+  const stepBack = (id) => { if (!L[id].seat && !moves.walking(id)) { const [x, z] = people.centre(L[id].col, L[id].row); moves.stand(id, x, z); } else L[id].faceAt = null; };
   function startConvo(a, b) {
     for (const id of [a, b]) if (S[id].convo) leave(id);
     const cv = { id: nextId++, kind: 'stand', talkers: new Set(), listeners: new Set() };
-    convos.set(cv.id, cv); enter(cv, a, 'talk'); enter(cv, b, 'talk'); faceAll(cv); changed();
+    convos.set(cv.id, cv); enter(cv, a, 'talk'); enter(cv, b, 'talk'); arrange(cv); changed();
     return cv;
   }
   function join(cv, id) {
     if (cv.kind !== 'stand') return;
-    enter(cv, id, cv.talkers.size < 3 ? 'talk' : 'listen'); faceAll(cv); changed();
+    enter(cv, id, cv.talkers.size < 3 ? 'talk' : 'listen'); arrange(cv); changed();
   }
   function leave(id) {
     const s = S[id], cv = convos.get(s.convo);
-    s.convo = null; s.role = null; s.nudges.clear(); L[id].faceAt = null;
+    s.convo = null; s.role = null; s.nudges.clear(); stepBack(id); pies.offset(id, 0, 0);
     pies.hide(id);
     if (!cv) return;
     cv.talkers.delete(id); cv.listeners.delete(id);
@@ -113,8 +127,8 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
     while (cv.kind === 'stand' && cv.talkers.size < 3 && cv.listeners.size) { const q = cv.listeners.values().next().value; cv.listeners.delete(q); cv.talkers.add(q); S[q].role = 'talk'; }
     if (cv.talkers.size < 2) { // too few left to talk: it's over
       convos.delete(cv.id);
-      for (const q of [...cv.talkers, ...cv.listeners]) { S[q].convo = null; S[q].role = null; S[q].nudges.clear(); L[q].faceAt = null; pies.hide(q); }
-    } else faceAll(cv);
+      for (const q of [...cv.talkers, ...cv.listeners]) { S[q].convo = null; S[q].role = null; S[q].nudges.clear(); stepBack(q); pies.offset(q, 0, 0); pies.hide(q); }
+    } else arrange(cv);
     changed();
   }
   // everyone seated at the same piece of furniture talks together

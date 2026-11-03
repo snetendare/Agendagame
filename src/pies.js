@@ -147,7 +147,7 @@ const Pies = (THREE, scene, people, opts = {}) => {
     }
     scene.add(holder);
     return { id: who.id, owner: who.group, n, holder, pop, inner, pieces, filled: 0, shown: false, popT: 1, popDir: 0,
-      s: spring(240, 0.26), tx: spring(200, 0.24), ty: spring(200, 0.24), chips: [], finale: -1 };
+      s: spring(240, 0.26), tx: spring(200, 0.24), ty: spring(200, 0.24), chips: [], finale: -1, off: [0, 0], offNow: [0, 0] };
   });
 
   // ---------- the moves ----------
@@ -204,7 +204,9 @@ const Pies = (THREE, scene, people, opts = {}) => {
     for (const p of pies) {
       if (!p.holder.visible) continue;
       p.holder.quaternion.copy(camera.quaternion).multiply(tiltQ);
-      p.holder.position.x = p.owner.position.x; p.holder.position.z = p.owner.position.z; // over its owner's head
+      // over its owner's head, pushed out by its offset (so the pies of people standing close don't pile up), easing there
+      for (const k of [0, 1]) { const d = p.off[k] - p.offNow[k]; p.offNow[k] = Math.abs(d) < 0.01 ? p.off[k] : p.offNow[k] + d * Math.min(1, dt * 6); }
+      p.holder.position.x = p.owner.position.x + p.offNow[0]; p.holder.position.z = p.owner.position.z + p.offNow[1];
       // popping up (or away)
       if (p.popDir) {
         p.popT = Math.min(1, p.popT + dt / (p.popDir > 0 ? 0.38 : 0.22));
@@ -268,9 +270,11 @@ const Pies = (THREE, scene, people, opts = {}) => {
       }
     }
   }
-  const busy = () => pies.some((p) => p.holder.visible && (p.popDir || p.chips.length || p.finale >= 0 || ![p.s, p.tx, p.ty].every(resting)
+  const busy = () => pies.some((p) => p.holder.visible && (p.popDir || p.off[0] !== p.offNow[0] || p.off[1] !== p.offNow[1] || p.chips.length || p.finale >= 0 || ![p.s, p.tx, p.ty].every(resting)
     || p.pieces.some((pc) => pc.state === 'fly' || pc.state === 'out' || pc.bump || pc.flash > 0 || (pc.state === 'seated' && !(resting(pc.z) && resting(pc.sq))))));
   const targets = () => pies.filter((p) => p.holder.visible).map((p) => p.holder);
+  // offset(id, dx, dz): hold the pie that far (m) from over its owner's head
+  const offset = (id, dx, dz) => { pies[id].off = [dx, dz]; };
   const state = (id) => ({ filled: pies[id].filled, n: pies[id].n, shown: pies[id].shown });
-  return { show, hide, add, clear, update, busy, targets, state, list: pies };
+  return { show, hide, add, clear, update, busy, targets, state, offset, list: pies };
 };
