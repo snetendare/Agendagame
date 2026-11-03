@@ -67,7 +67,7 @@ const World = (THREE, el, opts = {}) => {
   }
   const people = Characters(THREE, scene, BOARD, match, avoid);
   const pies = Pies(THREE, scene, { height: people.height, onEvent: (type, detail) => opts.onPie && opts.onPie(type, detail) });
-  const moves = Movement(THREE, scene, BOARD, people, furniture, { me: opts.me || 0 });
+  const moves = Movement(THREE, scene, BOARD, people, furniture, { me: opts.me || 0, tickS: () => TICK_S });
 
   // ---------- taps: on a person or a piece of furniture opens a popup over it; on a tile walks you there ----------
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
@@ -247,6 +247,7 @@ const World = (THREE, el, opts = {}) => {
   let tickT = 0, ticks = 0, paused = false; // pause(true) stops the clock (tick() still steps it by hand, for tests)
   function tick() {
     ticks++;
+    moves.tick(); // everyone walking takes their next step first, so what follows sees where they are
     for (let p = 0; p < 2; p++) { const o = orders[p]; orders[p] = null; if (o) o.run(); }
     moves.preview(null);
     social.tick(TICK_S);

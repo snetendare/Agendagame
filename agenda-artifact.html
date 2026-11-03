@@ -1040,11 +1040,14 @@ const Pies = (THREE, scene, opts = {}) => {
 // Nobody walks more than REACH tiles at a time: a longer route is cut after REACH steps (moveTo then returns 'leg',
 // and a seat at the far end isn't taken yet). The player has to steer leg by leg, and the NPCs walk the same way, so
 // how far someone goes in one go gives nothing away. The player sees their reach as a square on the floor.
-// Everyone walks at SPEED: NML's move speed 2 (metres a second; the Flame Wizard's), so a tile takes 3 s.
+//   tick()                on every game tick, before anything else happens on it: every walker takes its next step
+// Walking keeps to the ticks: everyone moves one tile a tick (a diagonal one too), the step drawn smoothly over the
+// tick's length (opts.tickS() seconds), so a figure arrives at the end of a tick and whatever it does next happens on
+// a tick, in step with everyone else. A faster or slower tick walks everyone faster or slower.
 // The path is a smooth curve through the tiles' middles; the arrow on the ground is that same curve, from the figure to
 // the end, shrinking as it walks.
 const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
-  const SPEED = 2;          // m/s, NML's move speed 2
+  const tickS = opts.tickS || (() => 2);
   const TURN = 9;           // how fast a figure turns to face where it walks (per second)
   const POSE_S = 0.32;      // seconds to sit down or get up
   const SIT_SQUASH = 0.3;   // a sitting figure is this much shorter (the robe folds over the seat)
@@ -1175,8 +1178,17 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
     if (seat) pts[pts.length - 1].set(seat.x, 0, seat.z); // a seat's place isn't the tile's middle: it's pulled to its table
     if (who.player === me) pending = false;
     if (pts[0].distanceTo(pts[pts.length - 1]) < 0.05) { walks.delete(id); who.col = to.col; who.row = to.row; if (seat) who.seated = true; return full || 'leg'; }
-    const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
-    walks.set(id, { curve, len: curve.getLength(), s: 0 });
+    const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal'), len = curve.getLength();
+    // how far along the curve each tile's middle is: one of these a tick (the last is the end, at a seat its place)
+    const N = Math.max(16, Math.ceil(len / 0.2)), samp = curve.getSpacedPoints(N), marks = [];
+    let j = 0;
+    for (const [x, z] of mids) {
+      let best = j, bd = Infinity;
+      for (let q = j; q <= N; q++) { const d = Math.hypot(samp[q].x - x, samp[q].z - z); if (d < bd) { bd = d; best = q; } }
+      j = best; marks.push(best / N * len);
+    }
+    marks[marks.length - 1] = len;
+    walks.set(id, { curve, len, s: 0, marks, k: 0, from: 0 });
     who.col = to.col; who.row = to.row;
     if (who.player === me) markDest(to);
     return full || 'leg';
@@ -1218,15 +1230,24 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
   // ---------- walking ----------
   const faceYaw = (w) => Math.atan2(-(w.faceAt[0] - w.group.position.x), -(w.faceAt[1] - w.group.position.z));
   const turnTo = (g, yaw, dt) => { let d = yaw - g.rotation.y; d = Math.atan2(Math.sin(d), Math.cos(d)); g.rotation.y += d * Math.min(1, TURN * dt); };
+  const arrive = (id) => { walks.delete(id); const who = people.list[id]; if (who.seat) who.seated = true; };
+  // a tick: whoever is between tiles finishes that step at once, then everyone starts the next one
+  function tick() {
+    for (const [id, w] of walks) {
+      w.s = w.marks[w.k];
+      if (w.k >= w.marks.length - 1) { arrive(id); continue; }
+      w.from = w.s; w.k++;
+    }
+  }
   function update(dt) {
     for (const [id, w] of walks) {
-      const g = people.list[id].group;
-      w.s = Math.min(w.len, w.s + SPEED * dt);
+      const g = people.list[id].group, goal = w.marks[w.k];
+      w.s = Math.min(goal, w.s + (goal - w.from) * dt / tickS());
       const u = w.s / w.len;
       w.curve.getPointAt(u, tmp); w.curve.getTangentAt(u, tan);
       g.position.x = tmp.x; g.position.z = tmp.z;
       turnTo(g, Math.atan2(-tan.x, -tan.z), dt); // the body faces -z
-      if (w.s >= w.len) { walks.delete(id); const who = people.list[id]; if (who.seat) who.seated = true; }
+      if (w.s >= w.len) arrive(id);
     }
     // stepping in to a conversation's circle (or back to the tile's middle)
     for (const who of people.list) {
@@ -1262,7 +1283,7 @@ const Movement = (THREE, scene, board, people, furniture, opts = {}) => {
     || (!w.seated && w.faceAt && !walks.has(w.id) && off(faceYaw(w), w.group.rotation.y) > 0.01)
     || (!w.seated && w.spot && !walks.has(w.id) && Math.hypot(w.spot[0] - w.group.position.x, w.spot[1] - w.group.position.z) > 0.005)
     || w.pose !== (w.seated && w.seat.pose === 'sit' ? 1 : 0));
-  return { moveTo, sit, leave, face, stand, setMe, update, inReach, preview, REACH, busy: () => walks.size > 0 || settling(), walking: (id) => walks.has(id), me: () => me, mine: () => people.list.find((p) => p.player === me), SPEED };
+  return { moveTo, sit, leave, face, stand, setMe, update, tick, inReach, preview, REACH, busy: () => walks.size > 0 || settling(), walking: (id) => walks.has(id), me: () => me, mine: () => people.list.find((p) => p.player === me) };
 };
 
 // ===== The party's social life: who talks to whom, in what mood, and the emotions they give and take =====
@@ -1826,7 +1847,7 @@ const World = (THREE, el, opts = {}) => {
   }
   const people = Characters(THREE, scene, BOARD, match, avoid);
   const pies = Pies(THREE, scene, { height: people.height, onEvent: (type, detail) => opts.onPie && opts.onPie(type, detail) });
-  const moves = Movement(THREE, scene, BOARD, people, furniture, { me: opts.me || 0 });
+  const moves = Movement(THREE, scene, BOARD, people, furniture, { me: opts.me || 0, tickS: () => TICK_S });
 
   // ---------- taps: on a person or a piece of furniture opens a popup over it; on a tile walks you there ----------
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
@@ -2006,6 +2027,7 @@ const World = (THREE, el, opts = {}) => {
   let tickT = 0, ticks = 0, paused = false; // pause(true) stops the clock (tick() still steps it by hand, for tests)
   function tick() {
     ticks++;
+    moves.tick(); // everyone walking takes their next step first, so what follows sees where they are
     for (let p = 0; p < 2; p++) { const o = orders[p]; orders[p] = null; if (o) o.run(); }
     moves.preview(null);
     social.tick(TICK_S);

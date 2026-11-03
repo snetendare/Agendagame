@@ -26,8 +26,8 @@ conversation. There is no win condition, networking or sound yet. Open `index.ht
 The game runs in ticks of 2 s (`TICK_S` in `src/world.js`, or `agenda.setTick(s)`). Everything anyone decides or does
 happens on a tick, at the same moment for everyone: NPC choices, conversation exchanges, moods, and your own orders.
 Whatever you order (walk, talk, sit, accept, leave...) waits for the next tick; one order is queued at a time and a new
-one replaces it. The ring in the top-left corner fills up to the next tick, and says what you've queued. Walking and the
-animations run smoothly between ticks.
+one replaces it. The ring in the top-left corner fills up to the next tick, and says what you've queued. Walking moves
+one tile a tick; only the animations (the steps between tiles, sitting, the pies) run between ticks.
 
 ### Camera
 NML's controls. The wheel (or a pinch) steps between Strategic, Tilted, Angled and Ground. Right or middle drag,
@@ -40,7 +40,8 @@ starts there, and Esc goes back to it. Taps in every view go to the game, so you
 - Per match (a new seed on every page load), these are random and then fixed: who stands where, which way they face,
   robe and skin colour, which two figures are the players, and the NPCs' types. Everything random comes from the seed,
   so a networked match only has to share it.
-- Everyone walks at 2 m/s (NML's move speed 2), about 3 s a tile.
+- Walking keeps to the ticks: everyone moves one tile a tick (diagonals too), drawn smoothly over the tick, so at
+  the standard 2 s tick that's 3 m/s. Changing the tick speed changes how fast everyone walks.
 - Nobody walks more than 3 tiles in one go. NPCs heading further walk leg by leg, a new leg on a tick, so how far
   someone walks at once gives nothing away.
 - Nobody starts in a pocket cut off from the room.
