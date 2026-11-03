@@ -1,4 +1,4 @@
-// ===== The world: the board, the land around it, the characters and the camera =====
+// ===== The world: the room (floor and walls), the characters and the camera =====
 // World(THREE, el) builds the scene into el and draws it whenever something changed (the camera moving, a resize, the
 // first frame, a pie animating). The board is BOARD.cols x BOARD.rows tiles of BOARD.tile metres, centred on the origin.
 const BOARD = { cols: 20, rows: 8, tile: 6 }; // NML's tiles (6 m), on a wider board: 120 x 48 m
@@ -15,33 +15,33 @@ const World = (THREE, el, opts = {}) => {
   renderer.domElement.style.touchAction = 'none';
   el.addEventListener('touchmove', (e) => { if (e.cancelable) e.preventDefault(); }, { passive: false });
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color('#0D1315');
-  scene.fog = new THREE.Fog('#0D1315', 90, 220);
+  // indoors, in the evening: a dark house round the room, warm light from above (the chandeliers, later)
+  scene.background = new THREE.Color('#15100D');
+  scene.fog = new THREE.Fog('#15100D', 90, 220);
   const camera = new THREE.PerspectiveCamera(35, 1, 1, 600);
-  scene.add(new THREE.HemisphereLight('#cfe3ff', '#20262a', 1.6));
-  const sun = new THREE.DirectionalLight('#fff3dc', 2.2);
-  sun.position.set(-30, 60, 25);
+  scene.add(new THREE.HemisphereLight('#FFE6C7', '#2A1D15', 1.5));
+  const sun = new THREE.DirectionalLight('#FFEBCF', 2.1);
+  sun.position.set(-18, 60, 22);
   sun.castShadow = true;
   sun.shadow.mapSize.set(4096, 4096); // NML: 2048 for its 72 x 96 m board; this one is wider
   Object.assign(sun.shadow.camera, { left: -80, right: 80, top: 60, bottom: -60, near: 1, far: 180 });
   scene.add(sun);
 
-  // ---------- the floor: the painted meadow with its grid ----------
+  // ---------- the floor: polished parquet with the tile grid in its joints ----------
   const floorTex = new THREE.CanvasTexture(Floor.paint(BOARD.cols, BOARD.rows, 96));
   floorTex.colorSpace = THREE.SRGBColorSpace;
   floorTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(BW, BD), new THREE.MeshLambertMaterial({ map: floorTex }));
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(BW, BD), new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.42, metalness: 0 }));
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
   scene.add(ground);
-  // the land around the board (flat, no trees or plants: no map art yet)
-  const around = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), new THREE.MeshLambertMaterial({ color: '#141b1d' }));
-  around.rotation.x = -Math.PI / 2; around.position.y = -0.05; around.receiveShadow = true;
+  // outside the room: dark
+  const around = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), new THREE.MeshLambertMaterial({ color: '#0F0B09' }));
+  around.rotation.x = -Math.PI / 2; around.position.y = -0.05;
   scene.add(around);
-
-  // the meadow's sky and surrounding land (NML's colours); no scenery models yet
+  // the walls (the one the camera looks in over drops low)
+  const room = Room(THREE, scene, BW, BD);
   let dirty = true;
-  scene.background.set('#A3B6B4'); scene.fog.color.set('#A3B6B4'); around.material.color.set('#64764D');
 
   // ---------- the people ----------
   const match = opts.match || Match();
@@ -66,7 +66,7 @@ const World = (THREE, el, opts = {}) => {
 
   // ---------- the camera: NML's controls, starting in (and going back to) the tilted view ----------
   const cam = Camera3D(THREE, camera, renderer.domElement, {
-    width: BW, depth: BD, home: 1, farTop: people.height + 1, tapsEverywhere: true,
+    width: BW, depth: BD, home: 1, farTop: room.height, tapsEverywhere: true,
     onInput: () => { dirty = true; },
     onTap: (point, cx, cy) => {
       const id = personAt(cx, cy);
@@ -92,6 +92,7 @@ const World = (THREE, el, opts = {}) => {
     if (!frozen && (dirty || cam.busy() || pies.busy() || moves.busy())) {
       dirty = false;
       cam.update(dt);
+      room.update(camera);
       moves.update(dt);
       pies.update(dt, camera);
       // the fog and the far plane follow how far back the camera stands: a tall phone screen has to stand far
