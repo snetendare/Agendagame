@@ -91,7 +91,7 @@ Anxiety (grey) and Sadness (blue).
   are the chance of what they give. Starting pieces never leave it. Pieces taken from conversations are added to it, up
   to 12 in all.
 - Gives and takes: most people do both. Every type 1 only takes, and 4 NPCs of the other types only give. The players
-  give and take (automatically for now, by the same rules as an NPC).
+  give and take automatically for now, by the same rules as an NPC, but only indifference pieces.
 - Conversation chart: one shared pie of 8 slots per conversation, floating over its middle (over the table, for a
   table). On each tick each member may act (35 to 55 % by social level, half while reluctant). One action gives and
   takes together, 0 to 3 pieces of each, depending on the person, free slots and room in their own chart.

@@ -24,7 +24,7 @@
 //   Personal chart: everyone starts with 2 indifference and 1 other emotion (their starting emotion). Starting pieces
 //     never leave the chart. Pieces taken from conversations are added to it (up to CAP pieces in all).
 //   Roles: some give and take, some only give, some only take (every type 1 only takes; GIVE_ONLY of the others only
-//     give). The players give and take.
+//     give). The players give and take, but for now only indifference pieces.
 //   Conversation chart: one shared pie per conversation, SLOTS slots. On a tick each member may act (likelier the more
 //     social, half as likely while reluctant). One action gives and takes together, 0 to 3 of each. Giving puts pieces
 //     from the personal chart into empty slots: pieces taken earlier go first (they move over); after that a starting
@@ -186,11 +186,14 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
   // ---------- giving and taking ----------
   const kind = (id) => S[id].type == null ? 'p' : S[id].type;
   const amount = (id) => { const w = AMOUNT[kind(id)]; let x = rr(); for (let n = 0; n < 4; n++) if ((x -= w[n]) <= 0) return n; return 3; };
-  // the piece id gives next: a taken piece first (it moves over), else a copy of a random starting piece
+  // which pieces id may give or take: everything, but for now a player only indifference
+  const allowed = (id, q) => L[id].player === null || q.e === 'indifference';
+  // the piece id gives next: a taken piece first (it moves over), else a copy of a random starting piece (null: none)
   function nextGift(id) {
-    const ps = P[id].pieces, gained = ps.filter((q) => !q.start);
+    const ps = P[id].pieces, gained = ps.filter((q) => !q.start && allowed(id, q));
     if (gained.length) { const g = gained[Math.floor(rr() * gained.length)]; ps.splice(ps.indexOf(g), 1); return { pc: g, from: g }; }
-    const st = ps.filter((q) => q.start), src = st[Math.floor(rr() * st.length)];
+    const st = ps.filter((q) => q.start && allowed(id, q)); if (!st.length) return null;
+    const src = st[Math.floor(rr() * st.length)];
     return { pc: piece(src.e), from: src };
   }
   // one tick of a conversation: who acts, the takes (dealt out), then the gives; returns what each did
@@ -210,8 +213,9 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
     let takers = shuffle(acts.filter((a) => a.take > 0));
     while (avail.length && takers.length) {
       for (const a of takers) {
-        if (!avail.length) break;
-        const slot = avail.pop(), pc = chart[slot]; chart[slot] = null;
+        const i = avail.findIndex((sl) => allowed(a.id, chart[sl]));
+        if (i < 0) { a.take = 0; continue; } // nothing left this one may take
+        const slot = avail.splice(i, 1)[0], pc = chart[slot]; chart[slot] = null;
         P[a.id].pieces.push(pc); a.got.push(pc); a.take--; pies.take(cv.id, slot);
       }
       takers = takers.filter((a) => a.take > 0);
@@ -219,7 +223,8 @@ const Social = (people, furniture, moves, pies, match, board, hooks = {}) => {
     // gives: into the slots that were empty before this tick, clockwise from the top
     for (const a of shuffle(acts.filter((x) => x.give > 0))) {
       for (let n = 0; n < a.give && emptyBefore.length; n++) {
-        const slot = emptyBefore.shift(), g = nextGift(a.id);
+        const g = nextGift(a.id); if (!g) break;
+        const slot = emptyBefore.shift();
         chart[slot] = g.pc; a.gave.push(g); pies.put(cv.id, slot, g.pc.e);
       }
     }
